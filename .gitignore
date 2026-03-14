@@ -1,0 +1,18 @@
+# Virtual environment
+backend/venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Test files
+backend/app/forensic/test_benford.py
+backend/app/forensic/*.xlsx
+
+# Environment variables
+.env
+
+# VS Code
+.vscode/
