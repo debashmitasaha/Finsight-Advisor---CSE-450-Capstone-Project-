@@ -1,0 +1,257 @@
+{
+  "next_group_no": 64,
+  "groups": [
+    {
+      "group_no": 1,
+      "rep_text": "cwip new internal road do/ /"
+    },
+    {
+      "group_no": 2,
+      "rep_text": "cwip civil work of rm silo vc/ /"
+    },
+    {
+      "group_no": 3,
+      "rep_text": "repairs & maint-fac p&m"
+    },
+    {
+      "group_no": 4,
+      "rep_text": "bogra plant cash"
+    },
+    {
+      "group_no": 5,
+      "rep_text": "fac canteen expenses"
+    },
+    {
+      "group_no": 6,
+      "rep_text": "fac books & newspaper"
+    },
+    {
+      "group_no": 7,
+      "rep_text": "registration & renewal"
+    },
+    {
+      "group_no": 8,
+      "rep_text": "carriage inward-local"
+    },
+    {
+      "group_no": 9,
+      "rep_text": "adv to soyeb arifen khan-np"
+    },
+    {
+      "group_no": 10,
+      "rep_text": "fac motor cycle fuel"
+    },
+    {
+      "group_no": 11,
+      "rep_text": "adv to mujibur rahman-ho"
+    },
+    {
+      "group_no": 12,
+      "rep_text": "head office cash"
+    },
+    {
+      "group_no": 13,
+      "rep_text": "fac agri. & gardening"
+    },
+    {
+      "group_no": 14,
+      "rep_text": "fac entertainment"
+    },
+    {
+      "group_no": 15,
+      "rep_text": "health policy expense"
+    },
+    {
+      "group_no": 16,
+      "rep_text": "adv to shohidul islam-procurement ho"
+    },
+    {
+      "group_no": 17,
+      "rep_text": "bmre of hammer mill platform & chain conv. th p-vc/ /"
+    },
+    {
+      "group_no": 18,
+      "rep_text": "bmre of electrical systems -vc/ /"
+    },
+    {
+      "group_no": 19,
+      "rep_text": "fac loading & unloading exp."
+    },
+    {
+      "group_no": 20,
+      "rep_text": "adv to enamul haque-bp"
+    },
+    {
+      "group_no": 21,
+      "rep_text": "fac stationery exp."
+    },
+    {
+      "group_no": 22,
+      "rep_text": "fac cleaning & washing"
+    },
+    {
+      "group_no": 23,
+      "rep_text": "ap supplier payable"
+    },
+    {
+      "group_no": 24,
+      "rep_text": "fac medical & acc. exp-general"
+    },
+    {
+      "group_no": 25,
+      "rep_text": "legal & professional fee"
+    },
+    {
+      "group_no": 26,
+      "rep_text": "current account with ibs"
+    },
+    {
+      "group_no": 27,
+      "rep_text": "repairs & maint-rm godown & sheds"
+    },
+    {
+      "group_no": 28,
+      "rep_text": "other cost for local rm"
+    },
+    {
+      "group_no": 29,
+      "rep_text": "current account with safir sir"
+    },
+    {
+      "group_no": 30,
+      "rep_text": "mkt travelling expenses"
+    },
+    {
+      "group_no": 31,
+      "rep_text": "salary & allowances payable"
+    },
+    {
+      "group_no": 32,
+      "rep_text": "staff house rent payable"
+    },
+    {
+      "group_no": 33,
+      "rep_text": "out of pocket payable"
+    },
+    {
+      "group_no": 34,
+      "rep_text": "fac utilities bill-ad"
+    },
+    {
+      "group_no": 35,
+      "rep_text": "land & land development-np"
+    },
+    {
+      "group_no": 36,
+      "rep_text": "fac postage stamp & courier"
+    },
+    {
+      "group_no": 37,
+      "rep_text": "fac toll exp for others vehicle"
+    },
+    {
+      "group_no": 38,
+      "rep_text": "current account with sh"
+    },
+    {
+      "group_no": 39,
+      "rep_text": "entertainment-general"
+    },
+    {
+      "group_no": 40,
+      "rep_text": "top managements canteen exp."
+    },
+    {
+      "group_no": 41,
+      "rep_text": "office maintenance"
+    },
+    {
+      "group_no": 42,
+      "rep_text": "conveyance allowances"
+    },
+    {
+      "group_no": 43,
+      "rep_text": "fuel exp.no. -"
+    },
+    {
+      "group_no": 44,
+      "rep_text": "car maint. no. -"
+    },
+    {
+      "group_no": 45,
+      "rep_text": "adv ag rangpur depot exp."
+    },
+    {
+      "group_no": 46,
+      "rep_text": "adv to fahad ibna doha-commercial ho"
+    },
+    {
+      "group_no": 47,
+      "rep_text": "directors apt. service charge-md"
+    },
+    {
+      "group_no": 48,
+      "rep_text": "gas bill"
+    },
+    {
+      "group_no": 49,
+      "rep_text": "consumables"
+    },
+    {
+      "group_no": 50,
+      "rep_text": "donation & gifts"
+    },
+    {
+      "group_no": 51,
+      "rep_text": "travelling allow-inland"
+    },
+    {
+      "group_no": 52,
+      "rep_text": "stationery expenses"
+    },
+    {
+      "group_no": 53,
+      "rep_text": "medical & accidental exp-md"
+    },
+    {
+      "group_no": 54,
+      "rep_text": "board meeting fees"
+    },
+    {
+      "group_no": 55,
+      "rep_text": "electricity bill-vc"
+    },
+    {
+      "group_no": 56,
+      "rep_text": "car maintenance-discovery no. -"
+    },
+    {
+      "group_no": 57,
+      "rep_text": "adv ag r&d project-b baria"
+    },
+    {
+      "group_no": 58,
+      "rep_text": "hbf-doc costs"
+    },
+    {
+      "group_no": 59,
+      "rep_text": "car allowance-h/o"
+    },
+    {
+      "group_no": 60,
+      "rep_text": "ap alliance bags ltd."
+    },
+    {
+      "group_no": 61,
+      "rep_text": "cwip-qc&qr others"
+    },
+    {
+      "group_no": 62,
+      "rep_text": "cash for q-center & q-residence"
+    },
+    {
+      "group_no": 63,
+      "rep_text": "factory lease rent payable"
+    }
+  ]
+}

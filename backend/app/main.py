@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.forensic.router import router as forensic_router
+from app.grouping.router import router as grouping_router
 
 app = FastAPI(
     title="FinSight Advisor API",
@@ -19,6 +20,7 @@ app.add_middleware(
 
 # Register routers
 app.include_router(forensic_router)
+app.include_router(grouping_router)
 
 @app.get("/")
 def root():
