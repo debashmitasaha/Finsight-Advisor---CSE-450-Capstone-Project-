@@ -95,7 +95,7 @@ def zscore_analysis(transactions: list[dict]) -> dict:
 
         for _, row in cohort.iterrows():
             z = (row['amount'] - mean) / std
-            if abs(z) > 2.5:
+            if abs(z) > 3:
                 flagged_transactions.append({
                     "transaction_date": str(row['transaction_date']),
                     "amount": row['amount'],
@@ -111,11 +111,12 @@ def zscore_analysis(transactions: list[dict]) -> dict:
         "flagged_transactions": flagged_transactions
     }
     
+
 def rsf_analysis(transactions: list[dict]) -> dict:
     """
     Run Relative Size Factor analysis on transactions.
-    RSF = transaction amount / median amount in (month, group) cohort.
-    Flags transactions where RSF > 3.0.
+    RSF = transaction amount / max amount in (month, group) cohort.
+    Flags transactions where RSF > 0.7.
     """
     df = pd.DataFrame(transactions)
     df['transaction_date'] = pd.to_datetime(df['transaction_date'])
@@ -127,21 +128,24 @@ def rsf_analysis(transactions: list[dict]) -> dict:
         if len(cohort) < 2:
             continue
 
-        median = cohort['amount'].median()
+        max_amount = cohort['amount'].max()
 
-        if median == 0:
+        if max_amount == 0:
             continue
 
+        # Sort amounts DESC as per pipeline
+        cohort = cohort.sort_values('amount', ascending=False)
+
         for _, row in cohort.iterrows():
-            rsf = row['amount'] / median
-            if rsf > 3.0:
+            rsf = row['amount'] / max_amount
+            if rsf > 0.7:
                 flagged_transactions.append({
                     "transaction_date": str(row['transaction_date']),
                     "amount": row['amount'],
                     "group": group,
                     "month": month,
                     "rsf": round(rsf, 4),
-                    "median": round(median, 4)
+                    "max_amount": round(max_amount, 4)
                 })
 
     return {

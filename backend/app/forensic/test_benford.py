@@ -57,4 +57,4 @@ for t in rsf_result['flagged_transactions']:
     print(f"  Amount: {t['amount']}")
     print(f"  Group: {t['group']}")
     print(f"  RSF: {t['rsf']}")
-    print(f"  Median: {t['median']}")
+    print(f"  Max Amount: {t['max_amount']}")
