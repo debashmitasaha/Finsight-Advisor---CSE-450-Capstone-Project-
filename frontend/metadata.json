@@ -1,0 +1,5 @@
+{
+  "name": "FinSight Advisor",
+  "description": "A comprehensive multi-tenant financial SaaS platform for budget prediction, forensic auditing, and transaction categorization across three user tiers: Super Admin, Admin, and Employee.",
+  "requestFramePermissions": []
+}
