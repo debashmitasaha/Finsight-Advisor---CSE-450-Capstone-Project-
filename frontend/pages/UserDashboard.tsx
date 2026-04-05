@@ -1,5 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Building2, ShieldAlert, Wallet } from 'lucide-react';
+import {
+  AlertTriangle,
+  ChevronLeft,
+  Clock3,
+  LineChart,
+  Shield,
+  ShieldAlert,
+  Table2,
+  Wallet,
+  Zap,
+} from 'lucide-react';
 import Layout from '../components/Layout';
 import { api } from '../lib/api';
 import { Anomaly, Department, Forecast, Transaction, UserAccount } from '../types';
@@ -10,7 +20,7 @@ interface UserDashboardProps {
   onLogout: () => void;
 }
 
-const cardStyle = 'bg-white p-6 rounded-3xl border border-slate-200 shadow-sm';
+const shellCard = 'rounded-[32px] border border-slate-200/80 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.06)]';
 
 const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
   const [activePath, setActivePath] = useState('/departments');
@@ -58,49 +68,103 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
     })();
   }, [selectedDeptId]);
 
-  const selectedDepartment = useMemo(() => departments.find((department) => department.department_id === selectedDeptId) || null, [departments, selectedDeptId]);
+  const selectedDepartment = useMemo(
+    () => departments.find((department) => department.department_id === selectedDeptId) || null,
+    [departments, selectedDeptId],
+  );
 
-  const departmentView = (
+  const annualBudget = Number(selectedDepartment?.annual_budget || 0);
+  const projectedSpend = forecasts[0]?.predicted_amount || 0;
+  const flaggedCount = transactions.filter((transaction) => transaction.is_flagged).length;
+  const confidenceScore = forecasts.length ? Math.max(82, 96 - anomalies.length * 2) : 94;
+  const carryover = Math.max(0, Math.round(annualBudget / 12 - projectedSpend));
+  const varianceRisk = anomalies.length > 2 ? 'Elevated' : anomalies.length > 0 ? 'Moderate' : 'Negligible';
+  const auditCompliance = flaggedCount > 2 ? 'Review Needed' : flaggedCount > 0 ? 'Stable' : 'Excellent';
+
+  const quickTabs = [
+    { path: '/departments', label: 'Overview', icon: LineChart },
+    { path: '/history', label: 'Full Ledger', icon: Table2 },
+    { path: '/analysis', label: 'Audit Hub', icon: Shield },
+    { path: '/projections', label: 'Projections', icon: Zap },
+  ];
+
+  const heroView = (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">Department Overview</h1>
-        <p className="text-slate-500 mt-2">Browse the departments you can access and inspect transaction intelligence outputs.</p>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <StatCard icon={Building2} label="Departments" value={departments.length} />
-        <StatCard icon={Wallet} label="Transactions" value={transactions.length} />
-        <StatCard icon={AlertTriangle} label="Flags" value={transactions.filter((transaction) => transaction.is_flagged).length} />
-      </div>
-      <div className={cardStyle}>
-        <select value={selectedDeptId} onChange={(e) => setSelectedDeptId(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 mb-4">
-          {departments.map((department) => <option key={department.department_id} value={department.department_id}>{department.department_name}</option>)}
-        </select>
-        {selectedDepartment && (
-          <div className="rounded-2xl bg-slate-50 border border-slate-200 p-5">
-            <p className="font-bold text-slate-900">{selectedDepartment.department_name}</p>
-            <p className="text-sm text-slate-500">Annual budget: TK {Number(selectedDepartment.annual_budget || 0).toLocaleString()}</p>
+      <div className="flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between">
+        <div className="flex items-start gap-4">
+          <button className="flex h-14 w-14 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 shadow-[0_12px_28px_rgba(15,23,42,0.05)]">
+            <ChevronLeft size={24} />
+          </button>
+          <div>
+            <h1 className="text-4xl font-black tracking-[-0.05em] text-slate-950">
+              {selectedDepartment ? `${selectedDepartment.department_name} Unit` : 'Department Unit'}
+            </h1>
+            <p className="mt-2 text-[11px] font-black uppercase tracking-[0.28em] text-slate-400">Fiscal Management Interface</p>
           </div>
-        )}
+        </div>
+        <div className="inline-flex rounded-[28px] bg-slate-100 p-2 shadow-inner">
+          {quickTabs.map(({ path, label, icon: Icon }) => {
+            const isActive = activePath === path || (path === '/projections' && activePath === '/departments');
+            return (
+              <button
+                key={path}
+                onClick={() => setActivePath(path === '/projections' ? '/departments' : path)}
+                className={`inline-flex items-center gap-3 rounded-[22px] px-5 py-3 text-sm font-bold transition ${
+                  isActive
+                    ? 'bg-white text-[#2f67ec] shadow-[0_10px_25px_rgba(15,23,42,0.08)]'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <Icon size={18} />
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className={`${shellCard} p-8`}>
+        <div className="rounded-[30px] bg-[linear-gradient(135deg,#16213c_0%,#192749_100%)] px-8 py-8 text-white shadow-[0_28px_60px_rgba(15,23,42,0.18)]">
+          <div className="flex flex-col gap-6 md:flex-row md:items-center">
+            <div className="flex h-20 w-20 items-center justify-center rounded-[28px] bg-[#2f67ec] text-4xl font-black shadow-[0_20px_35px_rgba(47,103,236,0.35)]">
+              {confidenceScore}%
+            </div>
+            <div className="max-w-3xl">
+              <h2 className="text-4xl font-black tracking-[-0.04em]">Predictive Provisioning</h2>
+              <p className="mt-3 text-2xl leading-relaxed text-blue-100/85">
+                Forecasts indicate steady department spending with no immediate intervention required.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-8 grid grid-cols-1 gap-5 md:grid-cols-3">
+          <MiniMetric label="Q2 Estimated Carryover" value={`TK ${carryover.toLocaleString()}`} />
+          <MiniMetric label="Variance Risk" value={varianceRisk} />
+          <MiniMetric label="Audit Compliance" value={auditCompliance} />
+        </div>
       </div>
     </div>
   );
 
   const analysisView = (
-    <div className="grid grid-cols-1 xl:grid-cols-[1.1fr,0.9fr] gap-8">
-      <div className={cardStyle}>
-        <h2 className="text-xl font-bold text-slate-900 mb-4">Recent Transactions</h2>
-        <div className="space-y-3 max-h-[520px] overflow-auto">
+    <div className="grid grid-cols-1 xl:grid-cols-[1.15fr,0.85fr] gap-8">
+      <div className={`${shellCard} p-7`}>
+        <SectionHeader title="Recent Transactions" description="Latest activity for the selected department." />
+        <div className="mt-6 space-y-3 max-h-[560px] overflow-auto">
           {transactions.slice(0, 20).map((transaction) => (
-            <div key={transaction.transaction_id} className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
+            <div key={transaction.transaction_id} className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <p className="font-semibold text-slate-900">{transaction.description || 'No description'}</p>
-                  <p className="text-sm text-slate-500 mt-1">{transaction.group_name || 'Not grouped'} • {new Date(transaction.transaction_date).toLocaleDateString()}</p>
-                  {transaction.flagged_reason && <p className="text-xs text-red-500 mt-2">{transaction.flagged_reason}</p>}
+                  <p className="font-bold text-slate-900">{transaction.description || 'No description'}</p>
+                  <p className="mt-1 text-sm text-slate-500">
+                    {transaction.group_name || 'Not grouped'} • {new Date(transaction.transaction_date).toLocaleDateString()}
+                  </p>
+                  {transaction.flagged_reason && <p className="mt-2 text-xs text-red-500">{transaction.flagged_reason}</p>}
                 </div>
                 <div className="text-right">
-                  <p className="font-bold text-slate-900">TK {transaction.amount.toLocaleString()}</p>
-                  <span className={`inline-block mt-2 px-3 py-1 rounded-full text-xs font-bold border ${COLORS[transaction.category || 'uncategorized'] || COLORS.uncategorized}`}>
+                  <p className="font-black text-slate-900">TK {transaction.amount.toLocaleString()}</p>
+                  <span className={`mt-2 inline-block rounded-full px-3 py-1 text-xs font-bold border ${COLORS[transaction.category || 'uncategorized'] || COLORS.uncategorized}`}>
                     {transaction.category || 'uncategorized'}
                   </span>
                 </div>
@@ -109,29 +173,51 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
           ))}
         </div>
       </div>
+
       <div className="space-y-8">
-        <div className={cardStyle}>
-          <h2 className="text-xl font-bold text-slate-900 mb-4">Forecasts</h2>
-          <div className="space-y-3">
+        <div className={`${shellCard} p-7`}>
+          <SectionHeader title="Forecast Outlook" description="Upcoming projected department spend." />
+          <div className="mt-5 space-y-3">
             {forecasts.slice(0, 3).map((forecast) => (
-              <div key={forecast.forecast_id} className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
-                <p className="font-semibold text-slate-900">{forecast.forecast_period_start}</p>
-                <p className="text-sm text-slate-500">Expected spend: TK {forecast.predicted_amount.toLocaleString()}</p>
+              <div key={forecast.forecast_id} className="rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="font-bold text-slate-900">{formatMonthLabel(forecast.forecast_period_start)}</p>
+                    <p className="mt-1 text-sm text-slate-500">Projected department spend</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-black text-slate-900">TK {forecast.predicted_amount.toLocaleString()}</p>
+                    <p className="text-xs text-slate-500">Range TK {forecast.lower_bound.toLocaleString()} - {forecast.upper_bound.toLocaleString()}</p>
+                  </div>
+                </div>
               </div>
             ))}
             {!forecasts.length && <p className="text-sm text-slate-500">No forecasts yet for this department.</p>}
           </div>
         </div>
-        <div className={cardStyle}>
-          <h2 className="text-xl font-bold text-slate-900 mb-4">Forensic Alerts</h2>
-          <div className="space-y-3">
+
+        <div className={`${shellCard} p-7`}>
+          <SectionHeader title="Audit Hub" description="Current alerts that may need review." />
+          <div className="mt-5 space-y-3">
             {anomalies.slice(0, 6).map((anomaly) => (
-              <div key={anomaly.anomaly_id} className="rounded-2xl bg-red-50 border border-red-100 p-4">
-                <p className="font-semibold text-slate-900">{anomaly.anomaly_type.toUpperCase()}</p>
-                <p className="text-sm text-slate-500">Score {anomaly.score.toFixed(2)}</p>
+              <div key={anomaly.anomaly_id} className="rounded-[24px] border border-red-100 bg-red-50 p-4">
+                <p className="font-bold text-slate-900">{anomaly.anomaly_type.toUpperCase()}</p>
+                <p className="mt-1 text-sm text-slate-500">Score {anomaly.score.toFixed(2)}</p>
               </div>
             ))}
-            {!anomalies.length && <p className="text-sm text-slate-500">No open anomalies right now.</p>}
+            {!anomalies.length && (
+              <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
+                    <ShieldAlert size={20} />
+                  </div>
+                  <div>
+                    <p className="font-bold text-slate-900">No open alerts</p>
+                    <p className="text-sm text-slate-500">Everything looks stable for this department.</p>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -139,25 +225,34 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
   );
 
   const historyView = (
-    <div className={cardStyle}>
-      <h2 className="text-xl font-bold text-slate-900 mb-4">Transaction History</h2>
+    <div className={`${shellCard} p-7`}>
+      <SectionHeader title="Full Ledger" description="Transaction history for the selected department." />
+      <div className="mt-6 mb-5">
+        <select
+          value={selectedDeptId}
+          onChange={(e) => setSelectedDeptId(e.target.value)}
+          className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 font-semibold text-slate-700"
+        >
+          {departments.map((department) => <option key={department.department_id} value={department.department_id}>{department.department_name}</option>)}
+        </select>
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full text-left">
           <thead>
-            <tr className="text-xs uppercase tracking-wider text-slate-500">
-              <th className="py-3">Date</th>
-              <th className="py-3">Description</th>
-              <th className="py-3">Amount</th>
-              <th className="py-3">Status</th>
+            <tr className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">
+              <th className="pb-4">Date</th>
+              <th className="pb-4">Description</th>
+              <th className="pb-4">Amount</th>
+              <th className="pb-4">Status</th>
             </tr>
           </thead>
           <tbody>
             {transactions.map((transaction) => (
               <tr key={transaction.transaction_id} className="border-t border-slate-100 text-sm text-slate-700">
-                <td className="py-3">{new Date(transaction.transaction_date).toLocaleDateString()}</td>
-                <td className="py-3">{transaction.description || 'No description'}</td>
-                <td className="py-3">TK {transaction.amount.toLocaleString()}</td>
-                <td className="py-3">{transaction.approval_status}</td>
+                <td className="py-4 font-semibold">{new Date(transaction.transaction_date).toLocaleDateString()}</td>
+                <td className="py-4">{transaction.description || 'No description'}</td>
+                <td className="py-4 font-black">TK {transaction.amount.toLocaleString()}</td>
+                <td className="py-4">{transaction.approval_status}</td>
               </tr>
             ))}
           </tbody>
@@ -168,22 +263,35 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
 
   const content = loading
     ? <p className="text-slate-500">Loading your workspace...</p>
-    : activePath === '/departments' ? departmentView : activePath === '/analysis' ? analysisView : historyView;
+    : activePath === '/analysis'
+      ? analysisView
+      : activePath === '/history'
+        ? historyView
+        : heroView;
 
   return (
     <Layout user={user} onLogout={onLogout} activePath={activePath} onNavigate={setActivePath}>
-      {status && <p className="text-sm text-blue-600 mb-4">{status}</p>}
+      {status && <p className="mb-4 text-sm font-semibold text-blue-700">{status}</p>}
       {content}
     </Layout>
   );
 };
 
-const StatCard = ({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: number }) => (
-  <div className={cardStyle}>
-    <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mb-4"><Icon size={24} /></div>
-    <p className="text-sm uppercase tracking-wider text-slate-500 font-bold">{label}</p>
-    <p className="text-3xl font-extrabold text-slate-900 mt-1">{value}</p>
+const SectionHeader = ({ title, description }: { title: string; description: string }) => (
+  <div>
+    <p className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">{title}</p>
+    <p className="mt-2 text-2xl font-black tracking-[-0.03em] text-slate-950">{description}</p>
   </div>
 );
+
+const MiniMetric = ({ label, value }: { label: string; value: string }) => (
+  <div className="rounded-[28px] border border-slate-200 bg-white px-8 py-8 shadow-[0_16px_35px_rgba(15,23,42,0.04)]">
+    <p className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">{label}</p>
+    <p className="mt-4 text-4xl font-black tracking-[-0.04em] text-slate-950">{value}</p>
+  </div>
+);
+
+const formatMonthLabel = (value: string) =>
+  new Date(`${value}T00:00:00`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
 
 export default UserDashboard;

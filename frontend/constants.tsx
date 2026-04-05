@@ -1,6 +1,7 @@
 import {
   Activity,
   Building2,
+  Clock3,
   Clock,
   FileSearch,
   LayoutDashboard,
@@ -29,6 +30,7 @@ export const SIDEBAR_ITEMS = {
     { name: 'Dept Control', icon: Settings, path: '/dept-control' },
     { name: 'Dept Status', icon: PieChart, path: '/dept-status' },
     { name: 'Reports', icon: FileSearch, path: '/reports' },
+    { name: 'History', icon: Clock3, path: '/history' },
     { name: 'Audit Logs', icon: Activity, path: '/audit-logs' },
   ],
   [UserRole.EMPLOYEE]: [

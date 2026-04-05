@@ -75,6 +75,26 @@ export interface Forecast {
   model_version: string | null;
 }
 
+export interface ForecastDiagnostics {
+  mape: number | null;
+  train_months: number;
+  season_length: number | null;
+  regular_difference: number | null;
+  seasonal_difference: number | null;
+  notes: string | null;
+}
+
+export interface ForecastRunResponse {
+  success: boolean;
+  history: { month: string; amount: number }[];
+  diagnostics: ForecastDiagnostics;
+  model: {
+    model_type: string;
+    model_version: string;
+  };
+  forecasts: Forecast[];
+}
+
 export interface Anomaly {
   anomaly_id: string;
   transaction_id: string;

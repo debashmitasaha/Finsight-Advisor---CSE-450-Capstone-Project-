@@ -135,45 +135,48 @@ const Layout: React.FC<LayoutProps> = ({ user, onLogout, children, activePath, o
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex overflow-hidden">
+    <div className="min-h-screen bg-[linear-gradient(180deg,#f5f9ff_0%,#eef4ff_28%,#f8fafc_100%)] flex overflow-hidden">
       {/* Sidebar */}
-      <aside className={`bg-slate-900 text-white w-64 fixed inset-y-0 left-0 z-50 transition-transform duration-300 transform ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:relative lg:translate-x-0`}>
-        <div className="flex items-center justify-between p-6 border-b border-slate-800">
+      <aside className={`bg-[#121a2f] text-white w-[252px] fixed inset-y-0 left-0 z-50 transition-transform duration-300 transform ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:relative lg:translate-x-0 shadow-[30px_0_60px_rgba(15,23,42,0.18)]`}>
+        <div className="flex items-center justify-between p-6 border-b border-white/6">
           <div className="flex items-center gap-3">
-            <div className="bg-blue-600/20 p-1.5 rounded-xl border border-blue-500/20">
+            <div className="bg-white/5 p-1.5 rounded-2xl border border-white/10 shadow-inner">
               <Logo size={28} variant="white" />
             </div>
-            <span className="text-xl font-black tracking-tighter">FinSight</span>
+            <div>
+              <span className="text-xl font-black tracking-tighter">FinSight</span>
+              <p className="text-[10px] font-black uppercase tracking-[0.28em] text-blue-200/80 mt-1">Advisor Suite</p>
+            </div>
           </div>
           <button onClick={() => setIsSidebarOpen(false)} className="lg:hidden text-slate-400">
             <X size={20} />
           </button>
         </div>
 
-        <nav className="p-4 space-y-1">
+        <nav className="p-4 space-y-2">
           {menuItems.map((item) => {
             const isActive = activePath === item.path;
             return (
               <button
                 key={item.name}
                 onClick={() => onNavigate?.(item.path)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all group ${
+                className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl transition-all group ${
                   isActive 
-                  ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' 
-                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                  ? 'bg-[#2f67ec] text-white shadow-[0_18px_35px_rgba(47,103,236,0.32)]' 
+                  : 'text-slate-300 hover:text-white hover:bg-white/5'
                 }`}
               >
-                <item.icon size={20} className={isActive ? 'text-white' : 'text-slate-400 group-hover:text-blue-400 transition-colors'} />
+                <item.icon size={19} className={isActive ? 'text-white' : 'text-slate-400 group-hover:text-blue-300 transition-colors'} />
                 <span className="font-bold text-sm tracking-tight">{item.name}</span>
               </button>
             );
           })}
         </nav>
 
-        <div className="absolute bottom-0 w-full p-4 border-t border-slate-800">
+        <div className="absolute bottom-0 w-full p-4 border-t border-white/6">
           <button 
             onClick={onLogout}
-            className="w-full flex items-center gap-3 px-4 py-3 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-all"
+            className="w-full flex items-center gap-3 px-4 py-3 text-slate-400 hover:text-red-300 hover:bg-red-500/10 rounded-2xl transition-all"
           >
             <LogOut size={20} />
             <span className="font-bold text-sm">Logout</span>
@@ -184,13 +187,13 @@ const Layout: React.FC<LayoutProps> = ({ user, onLogout, children, activePath, o
       {/* Main Content */}
       <main className="flex-1 overflow-auto">
         {/* Top Bar */}
-        <header className="bg-white border-b border-slate-200 sticky top-0 z-40">
-          <div className="h-16 flex items-center justify-between px-6">
+        <header className="sticky top-0 z-40 border-b border-white/60 bg-white/80 backdrop-blur-xl">
+          <div className="h-20 flex items-center justify-between px-6 md:px-8">
             <div className="flex items-center gap-4 lg:gap-0">
               <button onClick={() => setIsSidebarOpen(true)} className="lg:hidden text-slate-600">
                 <Menu size={24} />
               </button>
-              <div className="hidden md:flex items-center bg-slate-100 rounded-xl px-3 py-1.5 w-64 lg:w-96 border border-slate-200 focus-within:ring-2 focus-within:ring-blue-500 transition-all">
+              <div className="hidden md:flex items-center bg-white rounded-2xl px-4 py-3 w-64 lg:w-[420px] border border-slate-200 shadow-[0_12px_28px_rgba(15,23,42,0.05)] focus-within:ring-2 focus-within:ring-blue-500 transition-all">
                 <Search size={18} className="text-slate-400" />
                 <input 
                   type="text" 
@@ -205,7 +208,7 @@ const Layout: React.FC<LayoutProps> = ({ user, onLogout, children, activePath, o
               <div className="relative" ref={notificationRef}>
                 <button 
                   onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
-                  className={`relative p-2 rounded-xl transition-all group ${isNotificationsOpen ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-100'}`}
+                  className={`relative p-3 rounded-2xl transition-all group border ${isNotificationsOpen ? 'bg-blue-50 text-blue-600 border-blue-100' : 'text-slate-600 hover:bg-white border-slate-200 bg-white shadow-[0_12px_28px_rgba(15,23,42,0.05)]'}`}
                 >
                   <Bell size={20} className={unreadCount > 0 ? 'animate-wiggle' : ''} />
                   {unreadCount > 0 && (
@@ -306,12 +309,12 @@ const Layout: React.FC<LayoutProps> = ({ user, onLogout, children, activePath, o
               
               <div className="h-8 w-[1px] bg-slate-200"></div>
 
-              <div className="flex items-center gap-3 cursor-pointer hover:bg-slate-100 p-1.5 rounded-xl transition-all">
+              <div className="flex items-center gap-3 cursor-pointer hover:bg-white p-2 rounded-2xl transition-all border border-slate-200 bg-white shadow-[0_12px_28px_rgba(15,23,42,0.05)]">
                 <div className="text-right hidden sm:block">
                   <p className="text-sm font-bold text-slate-800 leading-none">{user.name}</p>
                   <p className="text-xs text-slate-500 mt-1 uppercase tracking-wider font-black">{roleLabels[user.account_type]}</p>
                 </div>
-                <div className="w-9 h-9 bg-blue-100 text-blue-600 rounded-xl flex items-center justify-center font-black">
+                <div className="w-10 h-10 bg-[#2f67ec] text-white rounded-2xl flex items-center justify-center font-black shadow-[0_12px_24px_rgba(47,103,236,0.24)]">
                   {user.name.charAt(0)}
                 </div>
               </div>
@@ -319,8 +322,10 @@ const Layout: React.FC<LayoutProps> = ({ user, onLogout, children, activePath, o
           </div>
         </header>
 
-        <div className="p-6 lg:p-10 max-w-7xl mx-auto">
-          {children}
+        <div className="p-6 md:p-8">
+          <div className="mx-auto max-w-[1500px]">
+            {children}
+          </div>
         </div>
       </main>
       

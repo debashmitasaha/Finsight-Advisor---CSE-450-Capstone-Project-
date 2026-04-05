@@ -1,4 +1,4 @@
-import { AdminOverview, Anomaly, Company, Department, Forecast, Transaction, UserAccount } from '../types';
+import { AdminOverview, Anomaly, Company, Department, Forecast, ForecastRunResponse, Transaction, UserAccount } from '../types';
 
 const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8000';
 
@@ -52,7 +52,7 @@ export const api = {
   runGrouping: (deptId: string) => request('/grouping/assign-groups', { method: 'POST', body: JSON.stringify({ dept_id: deptId }) }),
   categorizationSummary: (deptId: string) => request(`/categorization/dept/${deptId}/summary`),
   runCategorization: (deptId: string) => request('/categorization/predict', { method: 'POST', body: JSON.stringify({ dept_id: deptId }) }),
-  runForecast: (deptId: string, monthsAhead = 1) => request<{ forecasts: Forecast[]; history: { month: string; amount: number }[] }>('/budget/forecast', {
+  runForecast: (deptId: string, monthsAhead = 1) => request<ForecastRunResponse>('/budget/forecast', {
     method: 'POST',
     body: JSON.stringify({ dept_id: deptId, months_ahead: monthsAhead }),
   }),

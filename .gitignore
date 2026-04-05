@@ -7,6 +7,9 @@ __pycache__/
 *.pyo
 *.pyd
 
+# Generated ML artifacts
+backend/app/budget/artifacts/
+
 # Test files
 backend/app/forensic/test_benford.py
 backend/app/forensic/*.xlsx
