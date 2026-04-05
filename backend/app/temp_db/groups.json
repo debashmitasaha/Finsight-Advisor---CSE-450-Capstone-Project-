@@ -1,0 +1,30 @@
+[
+  {
+    "group_id": "770e8400-e29b-41d4-a716-446655440001",
+    "dept_id": "660e8400-e29b-41d4-a716-446655440001",
+    "chart_acc_head_name": "Salaries and Wages",
+    "group_no": 5100,
+    "created_at": "2025-01-01T10:00:00Z"
+  },
+  {
+    "group_id": "770e8400-e29b-41d4-a716-446655440002",
+    "dept_id": "660e8400-e29b-41d4-a716-446655440001",
+    "chart_acc_head_name": "Office Supplies",
+    "group_no": 6200,
+    "created_at": "2025-01-01T10:00:00Z"
+  },
+  {
+    "group_id": "770e8400-e29b-41d4-a716-446655440003",
+    "dept_id": "660e8400-e29b-41d4-a716-446655440002",
+    "chart_acc_head_name": "Training and Development",
+    "group_no": 6400,
+    "created_at": "2025-01-02T11:00:00Z"
+  },
+  {
+    "group_id": "770e8400-e29b-41d4-a716-446655440004",
+    "dept_id": "660e8400-e29b-41d4-a716-446655440003",
+    "chart_acc_head_name": "Equipment Purchase",
+    "group_no": 1500,
+    "created_at": "2025-01-05T14:30:00Z"
+  }
+]

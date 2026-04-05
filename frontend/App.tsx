@@ -1,6 +1,4 @@
-
-import React, { useState, useEffect } from 'react';
-import { UserAccount, UserRole } from './types';
+import React, { useEffect, useState } from 'react';
 import SplashScreen from './pages/SplashScreen';
 import LandingPage from './pages/LandingPage';
 import LoginPage from './pages/LoginPage';
@@ -9,7 +7,7 @@ import SuperAdminDashboard from './pages/SuperAdminDashboard';
 import AdminDashboard from './pages/AdminDashboard';
 import UserDashboard from './pages/UserDashboard';
 import DesignSystem from './pages/DesignSystem';
-import { MOCK_ACCOUNTS } from './constants';
+import { UserAccount, UserRole } from './types';
 
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
@@ -20,51 +18,33 @@ const App: React.FC = () => {
   const [viewDesignSystem, setViewDesignSystem] = useState(false);
 
   useEffect(() => {
-    if (window.location.hash === '#design') {
-      setViewDesignSystem(true);
-    }
-
     const savedUser = localStorage.getItem('finsight_user');
     if (savedUser) {
-      const parsedUser = JSON.parse(savedUser);
-      setCurrentUser(parsedUser);
+      setCurrentUser(JSON.parse(savedUser));
       setShowLanding(false);
       setShowSplash(false);
     }
     setIsInitialized(true);
-
-    const handleHashChange = () => {
-      setViewDesignSystem(window.location.hash === '#design');
-    };
-    window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
-  const handleLogin = (accountNo: string, password: string) => {
-    const user = MOCK_ACCOUNTS.find(acc => acc.account_no === accountNo);
-    if (user && password) {
-      setCurrentUser(user);
-      localStorage.setItem('finsight_user', JSON.stringify(user));
-    } else {
-      alert("Invalid credentials. Try SA001, ADM001, or EMP001");
-    }
+  const handleLogin = (user: UserAccount) => {
+    setCurrentUser(user);
+    setShowLanding(false);
+    setShowSplash(false);
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
     setShowLanding(true);
-    setShowSplash(false);
     setShowPresentation(false);
     localStorage.removeItem('finsight_user');
+    localStorage.removeItem('finsight_token');
   };
 
   if (!isInitialized) return null;
 
   if (viewDesignSystem) {
-    return <DesignSystem onExit={() => {
-      window.location.hash = '';
-      setViewDesignSystem(false);
-    }} />;
+    return <DesignSystem onExit={() => setViewDesignSystem(false)} />;
   }
 
   if (showSplash && !currentUser) {
@@ -73,23 +53,18 @@ const App: React.FC = () => {
 
   if (showPresentation && !currentUser) {
     return (
-      <PresentationSlides 
-        onClose={() => setShowPresentation(false)} 
+      <PresentationSlides
+        onClose={() => setShowPresentation(false)}
         onStartApp={() => {
           setShowPresentation(false);
           setShowLanding(false);
-        }} 
+        }}
       />
     );
   }
 
   if (!currentUser && showLanding) {
-    return (
-      <LandingPage 
-        onEnter={() => setShowLanding(false)} 
-        onStartTour={() => setShowPresentation(true)}
-      />
-    );
+    return <LandingPage onEnter={() => setShowLanding(false)} onStartTour={() => setShowPresentation(true)} />;
   }
 
   if (!currentUser) {

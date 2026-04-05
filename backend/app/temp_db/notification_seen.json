@@ -1,0 +1,51 @@
+[
+  {
+    "notification_seen_id": "ff0e8400-e29b-41d4-a716-446655440001",
+    "notification_id": "ee0e8400-e29b-41d4-a716-446655440001",
+    "user_id": "880e8400-e29b-41d4-a716-446655440001",
+    "is_read": true,
+    "read_at": "2025-02-05T10:30:00Z"
+  },
+  {
+    "notification_seen_id": "ff0e8400-e29b-41d4-a716-446655440002",
+    "notification_id": "ee0e8400-e29b-41d4-a716-446655440001",
+    "user_id": "880e8400-e29b-41d4-a716-446655440002",
+    "is_read": true,
+    "read_at": "2025-02-05T14:00:00Z"
+  },
+  {
+    "notification_seen_id": "ff0e8400-e29b-41d4-a716-446655440003",
+    "notification_id": "ee0e8400-e29b-41d4-a716-446655440002",
+    "user_id": "880e8400-e29b-41d4-a716-446655440001",
+    "is_read": true,
+    "read_at": "2025-02-06T11:00:00Z"
+  },
+  {
+    "notification_seen_id": "ff0e8400-e29b-41d4-a716-446655440004",
+    "notification_id": "ee0e8400-e29b-41d4-a716-446655440002",
+    "user_id": "880e8400-e29b-41d4-a716-446655440002",
+    "is_read": false,
+    "read_at": null
+  },
+  {
+    "notification_seen_id": "ff0e8400-e29b-41d4-a716-446655440005",
+    "notification_id": "ee0e8400-e29b-41d4-a716-446655440003",
+    "user_id": "880e8400-e29b-41d4-a716-446655440003",
+    "is_read": true,
+    "read_at": "2025-02-10T11:00:00Z"
+  },
+  {
+    "notification_seen_id": "ff0e8400-e29b-41d4-a716-446655440006",
+    "notification_id": "ee0e8400-e29b-41d4-a716-446655440004",
+    "user_id": "880e8400-e29b-41d4-a716-446655440003",
+    "is_read": false,
+    "read_at": null
+  },
+  {
+    "notification_seen_id": "ff0e8400-e29b-41d4-a716-446655440007",
+    "notification_id": "ee0e8400-e29b-41d4-a716-446655440005",
+    "user_id": "880e8400-e29b-41d4-a716-446655440001",
+    "is_read": false,
+    "read_at": null
+  }
+]
