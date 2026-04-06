@@ -22,6 +22,17 @@ const EMPLOYEE_SCOPE_OPTIONS = [
 
 const getErrorMessage = (err: unknown, fallback: string) => err instanceof Error ? err.message : fallback;
 
+const calculateForecastMonthsAhead = (transactions: Transaction[]) => {
+  if (!transactions.length) return 1;
+  const latestTransactionDate = transactions.reduce((latest, transaction) => {
+    const transactionDate = new Date(transaction.transaction_date);
+    return transactionDate > latest ? transactionDate : latest;
+  }, new Date(transactions[0].transaction_date));
+  const now = new Date();
+  const diffMonths = (now.getFullYear() - latestTransactionDate.getFullYear()) * 12 + (now.getMonth() - latestTransactionDate.getMonth());
+  return Math.max(1, diffMonths);
+};
+
 const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [activePath, setActivePath] = useState('/dashboard');
   const [departments, setDepartments] = useState<Department[]>([]);
@@ -73,9 +84,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const loadDepartmentData = async (departmentId: string) => {
     if (!departmentId) return;
     setStatus(null);
-    const [transactionResult, forecastResult, anomalyResult, groupingResult, categorizationResult] = await Promise.allSettled([
+    const [transactionResult, anomalyResult, groupingResult, categorizationResult] = await Promise.allSettled([
       api.transactions(departmentId),
-      api.forecasts(departmentId),
       api.anomalies(departmentId),
       api.groupingStats(departmentId),
       api.categorizationSummary(departmentId),
@@ -88,13 +98,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     } else {
       setTransactions([]);
       failures.push(`transactions: ${getErrorMessage(transactionResult.reason, 'Unable to load transactions')}`);
-    }
-
-    if (forecastResult.status === 'fulfilled') {
-      setForecasts(forecastResult.value);
-    } else {
-      setForecasts([]);
-      failures.push(`forecasts: ${getErrorMessage(forecastResult.reason, 'Unable to load forecasts')}`);
     }
 
     if (anomalyResult.status === 'fulfilled') {
@@ -116,6 +119,19 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     } else {
       setCategorizationSummary(null);
       failures.push(`categorization: ${getErrorMessage(categorizationResult.reason, 'Unable to load categorization summary')}`);
+    }
+
+    if (transactionResult.status === 'fulfilled' && transactionResult.value.length) {
+      try {
+        const monthsAhead = calculateForecastMonthsAhead(transactionResult.value);
+        const forecastResponse = await api.runForecast(departmentId, monthsAhead);
+        setForecasts(forecastResponse.forecasts);
+      } catch (error) {
+        setForecasts([]);
+        failures.push(`forecasts: ${getErrorMessage(error, 'Unable to generate forecast')}`);
+      }
+    } else {
+      setForecasts([]);
     }
 
     if (failures.length) {
@@ -487,6 +503,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       <DepartmentStatusDetail
         department={selectedDeptStatus}
         transactions={transactions}
+        forecasts={forecasts}
         activeTab={activeDeptTab}
         onTabChange={setActiveDeptTab}
         onBack={() => setSelectedDeptStatusId(null)}
@@ -868,12 +885,14 @@ const EmployeeProfile = ({
 const DepartmentStatusDetail = ({
   department,
   transactions,
+  forecasts,
   activeTab,
   onTabChange,
   onBack,
 }: {
   department: Department;
   transactions: Transaction[];
+  forecasts: Forecast[];
   activeTab: 'overview' | 'transactions' | 'forensic' | 'budget';
   onTabChange: (tab: 'overview' | 'transactions' | 'forensic' | 'budget') => void;
   onBack: () => void;
@@ -912,7 +931,7 @@ const DepartmentStatusDetail = ({
       </div>
 
       <div className="bg-white rounded-[2.5rem] border border-slate-200 p-8 shadow-sm min-h-[500px]">
-        {activeTab === 'overview' && <DepartmentOverviewTab department={department} transactions={transactions} />}
+        {activeTab === 'overview' && <DepartmentOverviewTab department={department} transactions={transactions} forecasts={forecasts} />}
         {activeTab === 'transactions' && <DepartmentLedgerTab transactions={transactions} />}
         {activeTab === 'forensic' && <DepartmentForensicTab department={department} />}
         {activeTab === 'budget' && <DepartmentPredictiveTab department={department} />}
@@ -921,7 +940,7 @@ const DepartmentStatusDetail = ({
   );
 };
 
-const DepartmentOverviewTab = ({ department, transactions }: { department: Department; transactions: Transaction[] }) => {
+const DepartmentOverviewTab = ({ department, transactions, forecasts }: { department: Department; transactions: Transaction[]; forecasts: Forecast[] }) => {
   const ledgerItems = transactions.length;
   const debitTransactions = transactions.filter((transaction) => transaction.transaction_type === 'debit');
   const creditTransactions = transactions.filter((transaction) => transaction.transaction_type === 'credit');
@@ -933,24 +952,39 @@ const DepartmentOverviewTab = ({ department, transactions }: { department: Depar
   });
   const actualSpending = currentMonthTransactions.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
 
-  const monthlySeriesMap = new Map<string, number>();
+  const monthlySeriesMap = new Map<string, { name: string; spend: number }>();
   spendingTransactions.forEach((transaction) => {
     const date = new Date(transaction.transaction_date);
-    const monthKey = date.toLocaleString('en-US', { month: 'short' });
-    monthlySeriesMap.set(monthKey, (monthlySeriesMap.get(monthKey) || 0) + Number(transaction.amount || 0));
+    const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const existing = monthlySeriesMap.get(monthKey);
+    monthlySeriesMap.set(monthKey, {
+      name: date.toLocaleString('en-US', { month: 'short' }),
+      spend: (existing?.spend || 0) + Number(transaction.amount || 0),
+    });
   });
 
-  const chartData = Array.from(monthlySeriesMap.entries()).map(([name, spend]) => ({ name, spend }));
-  const averageMonthlySpend = chartData.length > 0
-    ? actualSpending / chartData.length
-    : Number(department.annual_budget || 0) / 12;
+  const chartData = Array.from(monthlySeriesMap.entries())
+    .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+    .map(([, value]) => value);
+  const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const sortedForecasts = [...forecasts].sort((left, right) =>
+    new Date(left.forecast_period_start).getTime() - new Date(right.forecast_period_start).getTime(),
+  );
+  const currentMonthForecast = sortedForecasts.find((forecast) => forecast.forecast_period_start.startsWith(currentMonthKey))
+    || sortedForecasts[sortedForecasts.length - 1]
+    || null;
+  const monthlyBudget = currentMonthForecast
+    ? currentMonthForecast.predicted_amount
+    : (chartData.length > 0
+      ? chartData.reduce((sum, point) => sum + Number(point.spend || 0), 0) / chartData.length
+      : Number(department.annual_budget || 0) / 12);
 
   return (
     <div className="space-y-10">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <SummaryCard label="Unit Ledger Items" value={String(ledgerItems)} delta="" />
         <SummaryCard label="Actual Spending" value={`TK ${Math.round(actualSpending).toLocaleString()}`} delta="" />
-        <SummaryCard label="Monthly Budget" value={`TK ${Math.round(averageMonthlySpend).toLocaleString()}`} delta="" />
+        <SummaryCard label="Monthly Budget" value={`TK ${Math.round(monthlyBudget).toLocaleString()}`} delta={currentMonthForecast ? 'Forecasted' : ''} />
         <SummaryCard label="Data Integrity" value="99.2%" delta="+0.1%" />
       </div>
       <div className="h-[300px] bg-slate-50/50 p-8 rounded-[2rem] border border-slate-100 shadow-inner">

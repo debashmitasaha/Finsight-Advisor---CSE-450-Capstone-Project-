@@ -54,6 +54,7 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
   const [error, setError] = useState<string | null>(null);
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null);
   const [showAddUserModal, setShowAddUserModal] = useState(false);
+  const [showAddCompanyModal, setShowAddCompanyModal] = useState(false);
 
   const selectedCompany = useMemo(
     () => companies.find((company) => company.company_id === selectedCompanyId) ?? null,
@@ -148,9 +149,28 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
     try {
       const created = await api.createUser(payload);
       setUsers((prev) => [...prev, created]);
+      setCompanies((prev) =>
+        prev.map((company) =>
+          company.company_id === payload.company_id
+            ? { ...company, user_count: (company.user_count || 0) + 1 }
+            : company,
+        ),
+      );
+      setOverview((prev) => prev ? { ...prev, users: prev.users + 1 } : prev);
       setShowAddUserModal(false);
     } catch (err) {
       setError(getErrorMessage(err, 'Unable to create user'));
+    }
+  };
+
+  const handleAddCompany = async (companyName: string) => {
+    try {
+      const created = await api.createCompany(companyName);
+      setCompanies((prev) => [...prev, created]);
+      setOverview((prev) => prev ? { ...prev, companies: prev.companies + 1 } : prev);
+      setShowAddCompanyModal(false);
+    } catch (err) {
+      setError(getErrorMessage(err, 'Unable to create company'));
     }
   };
 
@@ -179,9 +199,18 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
 
   const renderCompanies = () => (
     <div className="space-y-8 animate-in fade-in duration-500">
-      <div>
-        <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">Company Management</h1>
-        <p className="text-slate-500 font-medium mt-1">Manage corporate entities and review their active users</p>
+      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">Company Management</h1>
+          <p className="text-slate-500 font-medium mt-1">Manage corporate entities and review their active users</p>
+        </div>
+        <button
+          onClick={() => setShowAddCompanyModal(true)}
+          className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white px-6 py-3.5 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-blue-500/25 active:scale-95"
+        >
+          <Plus size={20} />
+          Add Company
+        </button>
       </div>
       <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm">
         <div className="p-6 border-b border-slate-100 flex justify-between items-center">
@@ -288,6 +317,12 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
           company={selectedCompany}
           onClose={() => setShowAddUserModal(false)}
           onSubmit={handleAddUser}
+        />
+      )}
+      {showAddCompanyModal && (
+        <CreateCompanyModal
+          onClose={() => setShowAddCompanyModal(false)}
+          onSubmit={handleAddCompany}
         />
       )}
     </Layout>
@@ -557,6 +592,75 @@ const CreateUserModal = ({
               disabled={submitting}
             >
               {submitting ? 'Creating...' : 'Create Account'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+const CreateCompanyModal = ({
+  onClose,
+  onSubmit,
+}: {
+  onClose: () => void;
+  onSubmit: (companyName: string) => Promise<void>;
+}) => {
+  const [companyName, setCompanyName] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSubmitting(true);
+    try {
+      await onSubmit(companyName.trim());
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
+      <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl p-8 animate-in zoom-in-95 duration-300">
+        <div className="flex justify-between items-center mb-6">
+          <div>
+            <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Create Company</h2>
+            <p className="text-sm font-medium text-slate-500 mt-1">Add a new company to the platform</p>
+          </div>
+          <button onClick={onClose} className="p-2 text-slate-400 hover:bg-slate-100 rounded-xl transition-all">
+            <X size={20} />
+          </button>
+        </div>
+
+        <form className="space-y-5" onSubmit={handleSubmit}>
+          <div>
+            <label className="block text-sm font-bold text-slate-700 mb-2">Company Name</label>
+            <input
+              type="text"
+              placeholder="Enter company name"
+              className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-blue-500 focus:outline-none focus:bg-white transition-all font-medium"
+              value={companyName}
+              onChange={(event) => setCompanyName(event.target.value)}
+              required
+            />
+          </div>
+
+          <div className="pt-4 flex gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 py-4 rounded-2xl font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-all active:scale-95"
+              disabled={submitting}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="py-4 px-10 rounded-2xl font-bold text-white bg-blue-600 hover:bg-blue-700 transition-all shadow-lg shadow-blue-500/25 active:scale-95 disabled:opacity-60"
+              disabled={submitting || !companyName.trim()}
+            >
+              {submitting ? 'Creating...' : 'Create Company'}
             </button>
           </div>
         </form>
