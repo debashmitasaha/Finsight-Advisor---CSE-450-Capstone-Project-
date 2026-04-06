@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    Uuid,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -25,20 +26,28 @@ class Base(DeclarativeBase):
     pass
 
 
-def new_id() -> str:
-    return str(uuid.uuid4())
+def new_id() -> uuid.UUID:
+    return uuid.uuid4()
 
-
+# this types of class is called models
+# this writing our erd tables into class definitions is known as ORD (object relational mapping)
 class Department(Base):
     __tablename__ = "department"
 
-    department_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    # department_id: Mapped(str) - this attribute is named after the column in Department, and mapped tobe a string type variable
+    # = mapped_column(String, ...) - here mapped_column refers to the literal db table column which will be of 'String' datatype in the table
+    department_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=new_id)
     department_name: Mapped[str] = mapped_column(Text, nullable=False)
     annual_budget: Mapped[float | None] = mapped_column(Numeric(15, 2), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    company_id: Mapped[str | None] = mapped_column(ForeignKey("company.company_id", ondelete="SET NULL"), nullable=True)
+    company_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("company.company_id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
+    # relationship denotes the connection of other tables with the current one
+    # here back_populates="departments" mean company has a foreign key from departments
+    # table 
+    # Also Mapped[Company | None] means one department has relation with only one Company
+    # as it should be
     company: Mapped[Company | None] = relationship("Company", back_populates="departments", foreign_keys=[company_id])
     users: Mapped[list[UserRole]] = relationship("UserRole", back_populates="department", cascade="all, delete-orphan")
     transactions: Mapped[list[Transaction]] = relationship("Transaction", back_populates="department")
@@ -52,9 +61,9 @@ class Department(Base):
 class Company(Base):
     __tablename__ = "company"
 
-    company_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    company_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=new_id)
     company_name: Mapped[str] = mapped_column(Text, nullable=False)
-    dept_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
+    dept_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
 
     legacy_department: Mapped[Department | None] = relationship("Department", foreign_keys=[dept_id])
     departments: Mapped[list[Department]] = relationship("Department", back_populates="company", foreign_keys=[Department.company_id])
@@ -62,11 +71,11 @@ class Company(Base):
 
 
 class User(Base):
-    __tablename__ = "user"
+    __tablename__ = "users"
 
-    user_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=new_id)
     username: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    company_id: Mapped[str | None] = mapped_column(ForeignKey("company.company_id", ondelete="SET NULL"), nullable=True)
+    company_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("company.company_id", ondelete="SET NULL"), nullable=True)
     email: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -86,8 +95,8 @@ class UserRole(Base):
     __tablename__ = "user_role"
     __table_args__ = (PrimaryKeyConstraint("dept_id", "user_id", name="user_role_pkey"),)
 
-    dept_id: Mapped[str] = mapped_column(ForeignKey("department.department_id", ondelete="CASCADE"), nullable=False)
-    user_id: Mapped[str] = mapped_column(ForeignKey("user.user_id", ondelete="CASCADE"), nullable=False)
+    dept_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("department.department_id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
     permissions: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 
     department: Mapped[Department] = relationship("Department", back_populates="users")
@@ -101,7 +110,7 @@ class Group(Base):
         UniqueConstraint("dept_id", "group_no", name="group_dept_group_no_key"),
     )
 
-    dept_id: Mapped[str] = mapped_column(ForeignKey("department.department_id", ondelete="CASCADE"), nullable=False)
+    dept_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("department.department_id", ondelete="CASCADE"), nullable=False)
     chart_acc_head_name: Mapped[str] = mapped_column(Text, nullable=False)
     group_no: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
     group_name: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -115,14 +124,18 @@ class Group(Base):
 class Transaction(Base):
     __tablename__ = "transaction"
 
-    transaction_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    transaction_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=new_id)
     transaction_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     amount: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     category: Mapped[str | None] = mapped_column(Text, nullable=True, default="uncategorized")
-    department_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
+    transaction_type: Mapped[str] = mapped_column(Text, nullable=False, default="debit")
+    department_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
     payment_method: Mapped[str | None] = mapped_column(Text, nullable=True)
     invoice_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    voucher_number: Mapped[str | None] = mapped_column(Text, nullable=True)
+    account_head_group: Mapped[str | None] = mapped_column(Text, nullable=True)
+    voucher_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     po_number: Mapped[str | None] = mapped_column(Text, nullable=True)
     has_receipt: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     approval_status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
@@ -135,7 +148,7 @@ class Transaction(Base):
     is_flagged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     flagged_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_file_name: Mapped[str | None] = mapped_column(Text, nullable=True)
-    upload_batch_id: Mapped[str | None] = mapped_column(ForeignKey("upload_batch.upload_batch_id", ondelete="SET NULL"), nullable=True)
+    upload_batch_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("upload_batch.upload_batch_id", ondelete="SET NULL"), nullable=True)
     dedupe_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
@@ -150,8 +163,8 @@ class Transaction(Base):
 class Notification(Base):
     __tablename__ = "notification"
 
-    notification_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    department_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
+    notification_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=new_id)
+    department_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
@@ -164,8 +177,8 @@ class NotificationSeen(Base):
     __tablename__ = "notification_seen"
     __table_args__ = (PrimaryKeyConstraint("notification_id", "user_id", name="notification_seen_pkey"),)
 
-    notification_id: Mapped[str] = mapped_column(ForeignKey("notification.notification_id", ondelete="CASCADE"), nullable=False)
-    user_id: Mapped[str] = mapped_column(ForeignKey("user.user_id", ondelete="CASCADE"), nullable=False)
+    notification_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("notification.notification_id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
     is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -176,10 +189,10 @@ class NotificationSeen(Base):
 class AccessLog(Base):
     __tablename__ = "access_log"
 
-    log_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    user_id: Mapped[str | None] = mapped_column(ForeignKey("user.user_id", ondelete="SET NULL"), nullable=True)
-    dept_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
-    transaction_id: Mapped[str | None] = mapped_column(ForeignKey("transaction.transaction_id", ondelete="SET NULL"), nullable=True)
+    log_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=new_id)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    dept_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
+    transaction_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("transaction.transaction_id", ondelete="SET NULL"), nullable=True)
     action: Mapped[str] = mapped_column(Text, nullable=False)
     access_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
@@ -190,8 +203,8 @@ class AccessLog(Base):
 class CaseTransaction(Base):
     __tablename__ = "case_transaction"
 
-    ct_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    transaction_id: Mapped[str] = mapped_column(ForeignKey("transaction.transaction_id", ondelete="CASCADE"), nullable=False)
+    ct_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=new_id)
+    transaction_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("transaction.transaction_id", ondelete="CASCADE"), nullable=False)
     resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -201,8 +214,8 @@ class CaseTransaction(Base):
 class CaseAssignment(Base):
     __tablename__ = "case_assignment"
 
-    assignment_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    dept_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
+    assignment_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=new_id)
+    dept_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
     case_name: Mapped[str] = mapped_column(Text, nullable=False)
     resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -211,8 +224,8 @@ class CaseAssignment(Base):
 class BudgetForecast(Base):
     __tablename__ = "budget_forecast"
 
-    forecast_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    department_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="CASCADE"), nullable=True)
+    forecast_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=new_id)
+    department_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("department.department_id", ondelete="CASCADE"), nullable=True)
     forecast_period_start: Mapped[date] = mapped_column(Date, nullable=False)
     forecast_period_end: Mapped[date] = mapped_column(Date, nullable=False)
     predicted_amount: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
@@ -228,10 +241,10 @@ class BudgetForecast(Base):
 class UploadBatch(Base):
     __tablename__ = "upload_batch"
 
-    upload_batch_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    department_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
+    upload_batch_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=new_id)
+    department_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
     source_file_name: Mapped[str] = mapped_column(Text, nullable=False)
-    uploaded_by: Mapped[str | None] = mapped_column(ForeignKey("user.user_id", ondelete="SET NULL"), nullable=True)
+    uploaded_by: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="processing")
@@ -244,9 +257,9 @@ class UploadBatch(Base):
 class Anomaly(Base):
     __tablename__ = "anomaly"
 
-    anomaly_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    transaction_id: Mapped[str] = mapped_column(ForeignKey("transaction.transaction_id", ondelete="CASCADE"), nullable=False)
-    department_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
+    anomaly_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=new_id)
+    transaction_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("transaction.transaction_id", ondelete="CASCADE"), nullable=False)
+    department_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
     anomaly_type: Mapped[str] = mapped_column(Text, nullable=False)
     score: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False)
     threshold: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)

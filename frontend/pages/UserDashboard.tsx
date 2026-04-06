@@ -12,6 +12,8 @@ interface UserDashboardProps {
 
 const cardStyle = 'bg-white p-6 rounded-3xl border border-slate-200 shadow-sm';
 
+const getErrorMessage = (err: unknown, fallback: string) => err instanceof Error ? err.message : fallback;
+
 const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
   const [activePath, setActivePath] = useState('/departments');
   const [departments, setDepartments] = useState<Department[]>([]);
@@ -25,6 +27,7 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
   useEffect(() => {
     (async () => {
       setLoading(true);
+      setStatus(null);
       try {
         const departmentData = await api.departments(user.company_id || undefined);
         const allowed = user.departments.length
@@ -33,7 +36,7 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
         setDepartments(allowed);
         if (allowed[0]) setSelectedDeptId(allowed[0].department_id);
       } catch (err) {
-        setStatus(err instanceof Error ? err.message : 'Unable to load departments');
+        setStatus(getErrorMessage(err, 'Unable to load departments'));
       } finally {
         setLoading(false);
       }
@@ -43,17 +46,38 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
   useEffect(() => {
     if (!selectedDeptId) return;
     (async () => {
-      try {
-        const [transactionData, forecastData, anomalyData] = await Promise.all([
+      setStatus(null);
+      const [transactionResult, forecastResult, anomalyResult] = await Promise.allSettled([
           api.transactions(selectedDeptId),
           api.forecasts(selectedDeptId),
           api.anomalies(selectedDeptId),
         ]);
-        setTransactions(transactionData);
-        setForecasts(forecastData);
-        setAnomalies(anomalyData);
-      } catch (err) {
-        setStatus(err instanceof Error ? err.message : 'Unable to load department data');
+
+      const failures: string[] = [];
+
+      if (transactionResult.status === 'fulfilled') {
+        setTransactions(transactionResult.value);
+      } else {
+        setTransactions([]);
+        failures.push(`transactions: ${getErrorMessage(transactionResult.reason, 'Unable to load transactions')}`);
+      }
+
+      if (forecastResult.status === 'fulfilled') {
+        setForecasts(forecastResult.value);
+      } else {
+        setForecasts([]);
+        failures.push(`forecasts: ${getErrorMessage(forecastResult.reason, 'Unable to load forecasts')}`);
+      }
+
+      if (anomalyResult.status === 'fulfilled') {
+        setAnomalies(anomalyResult.value);
+      } else {
+        setAnomalies([]);
+        failures.push(`anomalies: ${getErrorMessage(anomalyResult.reason, 'Unable to load anomalies')}`);
+      }
+
+      if (failures.length) {
+        setStatus(failures.join(' | '));
       }
     })();
   }, [selectedDeptId]);

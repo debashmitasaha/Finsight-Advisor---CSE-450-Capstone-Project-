@@ -99,7 +99,7 @@ def generate_forecast(payload: ForecastRequest, current_user: User = Depends(get
         "history": [{"month": idx.strftime("%Y-%m"), "amount": float(val)} for idx, val in monthly.items()],
         "forecasts": [
             {
-                "forecast_id": forecast.forecast_id,
+                "forecast_id": str(forecast.forecast_id),
                 "forecast_period_start": forecast.forecast_period_start.isoformat(),
                 "forecast_period_end": forecast.forecast_period_end.isoformat(),
                 "predicted_amount": float(forecast.predicted_amount),
@@ -123,7 +123,7 @@ def get_forecasts(dept_id: str, current_user: User = Depends(get_current_user), 
     )
     return [
         {
-            "forecast_id": forecast.forecast_id,
+            "forecast_id": str(forecast.forecast_id),
             "forecast_period_start": forecast.forecast_period_start.isoformat(),
             "forecast_period_end": forecast.forecast_period_end.isoformat(),
             "predicted_amount": float(forecast.predicted_amount),

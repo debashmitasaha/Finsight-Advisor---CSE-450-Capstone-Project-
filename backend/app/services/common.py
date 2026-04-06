@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import hashlib
 import re
 from typing import Iterable
@@ -7,7 +8,7 @@ from typing import Iterable
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from app.models import Department, User, UserRole
+from app.models import Department, Transaction, User, UserRole
 
 
 CATEGORY_VALUES = {"necessary", "unnecessary", "uncategorized"}
@@ -64,12 +65,41 @@ def get_department_or_404(db: Session, department_id: str) -> Department:
     return department
 
 
+def calculate_department_budget_usage(transactions: list[Transaction], annual_budget: float | None) -> dict[str, float]:
+    current_year = datetime.now(timezone.utc).year
+    current_year_transactions = [
+        txn for txn in transactions
+        if txn.transaction_date and txn.transaction_date.year == current_year
+    ]
+
+    grouped: dict[str, list[Transaction]] = {}
+    for txn in current_year_transactions:
+        group_key = txn.invoice_id or str(txn.transaction_id)
+        grouped.setdefault(group_key, []).append(txn)
+
+    used_budget = 0.0
+    for group in grouped.values():
+        debit_amount = sum(float(txn.amount or 0) for txn in group if (txn.transaction_type or "debit").lower() == "debit")
+        credit_amount = sum(float(txn.amount or 0) for txn in group if (txn.transaction_type or "").lower() == "credit")
+        if debit_amount > 0:
+            used_budget += debit_amount
+        elif credit_amount > 0:
+            used_budget += credit_amount
+
+    budget_value = float(annual_budget or 0)
+    utilization_pct = (used_budget / budget_value) * 100 if budget_value > 0 else 0.0
+    return {
+        "used_budget_current_year": round(used_budget, 2),
+        "annual_budget_utilization_pct": round(utilization_pct, 2),
+    }
+
+
 def serialize_user(user: User) -> dict:
     roles = []
     for role in user.roles:
         roles.append(
             {
-                "department_id": role.dept_id,
+                "department_id": str(role.dept_id),
                 "department_name": role.department.department_name if role.department else None,
                 "permissions": role.permissions or [],
             }
@@ -83,13 +113,14 @@ def serialize_user(user: User) -> dict:
         account_type = "EMPLOYEE"
 
     return {
-        "user_id": user.user_id,
+        "user_id": str(user.user_id),
         "username": user.username,
         "name": user.username,
         "email": user.email,
-        "company_id": user.company_id,
+        "company_id": str(user.company_id) if user.company_id else None,
         "is_admin": user.is_admin,
         "is_active": user.is_active,
+        "last_login": user.last_login.isoformat() if user.last_login else None,
         "account_type": account_type,
         "departments": roles,
     }

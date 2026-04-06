@@ -123,9 +123,19 @@ def get_department_groups(dept_id: str, current_user: User = Depends(get_current
 
 @router.get("/dept/{dept_id}/statistics")
 def get_grouping_statistics(dept_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    total_groups = db.query(Group).filter(Group.dept_id == dept_id).count()
-    grouped_transactions = db.query(Transaction).filter(Transaction.department_id == dept_id, Transaction.group_no.isnot(None)).count()
-    ungrouped_transactions = db.query(Transaction).filter(Transaction.department_id == dept_id, Transaction.group_no.is_(None)).count()
+    total_groups = int(db.query(func.count()).select_from(Group).filter(Group.dept_id == dept_id).scalar() or 0)
+    grouped_transactions = int(
+        db.query(func.count(Transaction.transaction_id))
+        .filter(Transaction.department_id == dept_id, Transaction.group_no.isnot(None))
+        .scalar()
+        or 0
+    )
+    ungrouped_transactions = int(
+        db.query(func.count(Transaction.transaction_id))
+        .filter(Transaction.department_id == dept_id, Transaction.group_no.is_(None))
+        .scalar()
+        or 0
+    )
     top_groups = (
         db.query(Transaction.group_name, func.count(Transaction.transaction_id).label("count"))
         .filter(Transaction.department_id == dept_id, Transaction.group_name.isnot(None))

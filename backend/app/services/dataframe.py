@@ -36,6 +36,7 @@ def department_transactions_df(db: Session, department_id: str) -> pd.DataFrame:
                 "department_id": txn.department_id,
                 "transaction_date": txn.transaction_date,
                 "amount": float(txn.amount),
+                "transaction_type": txn.transaction_type,
                 "description": txn.description,
                 "category": txn.category,
                 "chart_acc_head": txn.chart_acc_head,

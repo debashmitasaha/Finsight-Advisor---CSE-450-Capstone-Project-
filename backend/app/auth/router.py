@@ -68,11 +68,11 @@ def _encode_token(payload: dict, expires_delta: timedelta) -> str:
 
 
 def create_access_token(user_id: str) -> str:
-    return _encode_token({"sub": user_id, "type": "access"}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    return _encode_token({"sub": str(user_id), "type": "access"}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
 
 
 def create_refresh_token(user_id: str) -> str:
-    return _encode_token({"sub": user_id, "type": "refresh"}, timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
+    return _encode_token({"sub": str(user_id), "type": "refresh"}, timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
 
 
 def decode_token(token: str, expected_type: str) -> str:

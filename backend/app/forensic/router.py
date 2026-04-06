@@ -178,9 +178,9 @@ def get_anomalies(dept_id: str, current_user: User = Depends(get_current_user), 
     anomalies = db.query(Anomaly).filter(Anomaly.department_id == dept_id).order_by(Anomaly.created_at.desc()).all()
     return [
         {
-            "anomaly_id": anomaly.anomaly_id,
-            "transaction_id": anomaly.transaction_id,
-            "department_id": anomaly.department_id,
+            "anomaly_id": str(anomaly.anomaly_id),
+            "transaction_id": str(anomaly.transaction_id),
+            "department_id": str(anomaly.department_id) if anomaly.department_id else None,
             "anomaly_type": anomaly.anomaly_type,
             "score": float(anomaly.score),
             "threshold": float(anomaly.threshold or 0),
