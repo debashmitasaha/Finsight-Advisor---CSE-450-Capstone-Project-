@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import Layout from '../components/Layout';
 import { api } from '../lib/api';
-import { Anomaly, Department, Forecast, Transaction, UserAccount } from '../types';
+import { Anomaly, Department, Forecast, ForecastDiagnostics, Transaction, UserAccount } from '../types';
 import { COLORS } from '../constants';
 
 interface UserDashboardProps {
@@ -28,6 +28,7 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
   const [selectedDeptId, setSelectedDeptId] = useState('');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [forecasts, setForecasts] = useState<Forecast[]>([]);
+  const [forecastDiagnostics, setForecastDiagnostics] = useState<ForecastDiagnostics | null>(null);
   const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<string | null>(null);
@@ -54,13 +55,14 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
     if (!selectedDeptId) return;
     (async () => {
       try {
-        const [transactionData, forecastData, anomalyData] = await Promise.all([
+        const [transactionData, forecastContext, anomalyData] = await Promise.all([
           api.transactions(selectedDeptId),
-          api.forecasts(selectedDeptId),
+          api.forecastContext(selectedDeptId, { monthsAhead: 6 }),
           api.anomalies(selectedDeptId),
         ]);
         setTransactions(transactionData);
-        setForecasts(forecastData);
+        setForecasts(forecastContext.forecasts);
+        setForecastDiagnostics(forecastContext.diagnostics);
         setAnomalies(anomalyData);
       } catch (err) {
         setStatus(err instanceof Error ? err.message : 'Unable to load department data');
@@ -74,12 +76,27 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
   );
 
   const annualBudget = Number(selectedDepartment?.annual_budget || 0);
-  const projectedSpend = forecasts[0]?.predicted_amount || 0;
+  const orderedForecasts = useMemo(
+    () => [...forecasts].sort((left, right) => left.forecast_period_start.localeCompare(right.forecast_period_start)),
+    [forecasts],
+  );
+  const projectedSpend = orderedForecasts[0]?.predicted_amount || 0;
   const flaggedCount = transactions.filter((transaction) => transaction.is_flagged).length;
-  const confidenceScore = forecasts.length ? Math.max(82, 96 - anomalies.length * 2) : 94;
+  const confidenceScore = forecastDiagnostics?.mape !== null && forecastDiagnostics?.mape !== undefined
+    ? Math.max(0, Math.round(100 - forecastDiagnostics.mape))
+    : (forecasts.length ? Math.max(82, 96 - anomalies.length * 2) : 94);
   const carryover = Math.max(0, Math.round(annualBudget / 12 - projectedSpend));
-  const varianceRisk = anomalies.length > 2 ? 'Elevated' : anomalies.length > 0 ? 'Moderate' : 'Negligible';
+  const varianceRisk = forecastDiagnostics?.mape !== null && forecastDiagnostics?.mape !== undefined
+    ? forecastDiagnostics.mape > 30 ? 'Elevated' : forecastDiagnostics.mape > 15 ? 'Moderate' : 'Negligible'
+    : (anomalies.length > 2 ? 'Elevated' : anomalies.length > 0 ? 'Moderate' : 'Negligible');
   const auditCompliance = flaggedCount > 2 ? 'Review Needed' : flaggedCount > 0 ? 'Stable' : 'Excellent';
+  const forecastCoverage = forecastDiagnostics?.train_months || 0;
+  const predictionNarrative = employeeForecastNarrative(forecastDiagnostics?.notes, confidenceScore)
+    || (confidenceScore >= 80
+      ? 'Forecast confidence is strong and current spending patterns remain aligned with expected targets.'
+      : confidenceScore >= 60
+        ? 'Forecast confidence is moderate, so near-term spending should be watched for variance.'
+        : 'Forecast confidence is limited, so this projection should be treated as directional guidance only.');
 
   const quickTabs = [
     { path: '/departments', label: 'Overview', icon: LineChart },
@@ -132,8 +149,12 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
             <div className="max-w-3xl">
               <h2 className="text-4xl font-black tracking-[-0.04em]">Predictive Provisioning</h2>
               <p className="mt-3 text-2xl leading-relaxed text-blue-100/85">
-                Forecasts indicate steady department spending with no immediate intervention required.
+                {predictionNarrative}
               </p>
+              <div className="mt-5 flex flex-wrap gap-3 text-xs font-black uppercase tracking-[0.18em] text-blue-100/80">
+                <span>Coverage {forecastCoverage} months</span>
+                <span>MAPE {forecastDiagnostics?.mape !== null && forecastDiagnostics?.mape !== undefined ? `${forecastDiagnostics.mape}%` : 'N/A'}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -178,7 +199,7 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
         <div className={`${shellCard} p-7`}>
           <SectionHeader title="Forecast Outlook" description="Upcoming projected department spend." />
           <div className="mt-5 space-y-3">
-            {forecasts.slice(0, 3).map((forecast) => (
+            {orderedForecasts.slice(0, 3).map((forecast) => (
               <div key={forecast.forecast_id} className="rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-4">
                 <div className="flex items-start justify-between gap-4">
                   <div>
@@ -293,5 +314,21 @@ const MiniMetric = ({ label, value }: { label: string; value: string }) => (
 
 const formatMonthLabel = (value: string) =>
   new Date(`${value}T00:00:00`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+
+const employeeForecastNarrative = (notes: string | null | undefined, confidenceScore: number) => {
+  if (!notes) return null;
+  if (notes.includes('rolling averages validated better')) {
+    return confidenceScore >= 80
+      ? 'Recent spending patterns are stable, and the current projection is tracking well against expected department activity.'
+      : 'Recent spending patterns are being used to project near-term budget usage, with moderate confidence in the outlook.';
+  }
+  if (notes.includes('last-year-same-month spending')) {
+    return 'This projection is based on seasonal patterns from prior months and gives a practical estimate of near-term department spending.';
+  }
+  if (notes.includes('Fallback trend forecast')) {
+    return 'This projection is based on a simpler spending trend because there is not yet enough history for a stronger forecast.';
+  }
+  return notes;
+};
 
 export default UserDashboard;

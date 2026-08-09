@@ -9,14 +9,42 @@ from app.models import Transaction
 
 
 SUPPORTED_EXTENSIONS = {".csv", ".xls", ".xlsx"}
+UPLOAD_COLUMN_ALIASES = {
+    "transaction_date": ("transaction_date", "date", "txn_date"),
+    "amount": ("amount", "debit", "debit_amount", "transaction_amount"),
+    "description": ("description", "narration", "details", "remarks"),
+    "chart_acc_head": ("chart_acc_head", "chart_of_acc_head", "account_head", "chart_account_head"),
+}
+
+
+def _normalize_column_name(column: object) -> str:
+    return str(column).strip().lower()
+
+
+def normalize_upload_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    normalized = df.copy()
+    normalized.columns = [_normalize_column_name(column) for column in normalized.columns]
+
+    rename_map: dict[str, str] = {}
+    for canonical, aliases in UPLOAD_COLUMN_ALIASES.items():
+        if canonical in normalized.columns:
+            continue
+        for alias in aliases:
+            if alias in normalized.columns:
+                rename_map[alias] = canonical
+                break
+
+    if rename_map:
+        normalized = normalized.rename(columns=rename_map)
+    return normalized
 
 
 def read_uploaded_file(filename: str, content: bytes) -> pd.DataFrame:
     lower = filename.lower()
     if lower.endswith(".csv"):
-        return pd.read_csv(BytesIO(content))
+        return normalize_upload_dataframe(pd.read_csv(BytesIO(content)))
     if lower.endswith(".xlsx") or lower.endswith(".xls"):
-        return pd.read_excel(BytesIO(content))
+        return normalize_upload_dataframe(pd.read_excel(BytesIO(content)))
     raise ValueError("Only CSV, XLS, and XLSX files are supported")
 
 

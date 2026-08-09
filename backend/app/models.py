@@ -62,7 +62,9 @@ class Company(Base):
 
 
 class User(Base):
-    __tablename__ = "user"
+    # Bug fix: "user" is a reserved word in Postgres and causes cryptic errors at runtime.
+    # Renamed to "users" to be safe across all supported databases.
+    __tablename__ = "users"
 
     user_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
     username: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
@@ -87,7 +89,7 @@ class UserRole(Base):
     __table_args__ = (PrimaryKeyConstraint("dept_id", "user_id", name="user_role_pkey"),)
 
     dept_id: Mapped[str] = mapped_column(ForeignKey("department.department_id", ondelete="CASCADE"), nullable=False)
-    user_id: Mapped[str] = mapped_column(ForeignKey("user.user_id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
     permissions: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 
     department: Mapped[Department] = relationship("Department", back_populates="users")
@@ -118,6 +120,10 @@ class Transaction(Base):
     transaction_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
     transaction_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     amount: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
+    # Bug 1 fix: transaction_type distinguishes money-out (debit) from money-in (credit).
+    # Required by _pick_spending_side() in forecasting.py so forecasts use spend only.
+    # Defaults to "debit" so existing rows without this column still behave correctly.
+    transaction_type: Mapped[str] = mapped_column(Text, nullable=False, default="debit")
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     category: Mapped[str | None] = mapped_column(Text, nullable=True, default="uncategorized")
     department_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
@@ -165,7 +171,7 @@ class NotificationSeen(Base):
     __table_args__ = (PrimaryKeyConstraint("notification_id", "user_id", name="notification_seen_pkey"),)
 
     notification_id: Mapped[str] = mapped_column(ForeignKey("notification.notification_id", ondelete="CASCADE"), nullable=False)
-    user_id: Mapped[str] = mapped_column(ForeignKey("user.user_id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
     is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -177,7 +183,7 @@ class AccessLog(Base):
     __tablename__ = "access_log"
 
     log_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    user_id: Mapped[str | None] = mapped_column(ForeignKey("user.user_id", ondelete="SET NULL"), nullable=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
     dept_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
     transaction_id: Mapped[str | None] = mapped_column(ForeignKey("transaction.transaction_id", ondelete="SET NULL"), nullable=True)
     action: Mapped[str] = mapped_column(Text, nullable=False)
@@ -231,7 +237,7 @@ class UploadBatch(Base):
     upload_batch_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
     department_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
     source_file_name: Mapped[str] = mapped_column(Text, nullable=False)
-    uploaded_by: Mapped[str | None] = mapped_column(ForeignKey("user.user_id", ondelete="SET NULL"), nullable=True)
+    uploaded_by: Mapped[str | None] = mapped_column(ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="processing")

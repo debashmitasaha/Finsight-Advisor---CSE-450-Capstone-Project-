@@ -1,4 +1,16 @@
-import { AdminOverview, Anomaly, Company, Department, Forecast, ForecastRunResponse, Transaction, UserAccount } from '../types';
+import {
+  AdminOverview,
+  Anomaly,
+  Company,
+  Department,
+  Forecast,
+  ForecastContextResponse,
+  ForecastRunResponse,
+  ForecastSourceMode,
+  Transaction,
+  UploadBatchSummary,
+  UserAccount,
+} from '../types';
 
 const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8000';
 
@@ -52,11 +64,46 @@ export const api = {
   runGrouping: (deptId: string) => request('/grouping/assign-groups', { method: 'POST', body: JSON.stringify({ dept_id: deptId }) }),
   categorizationSummary: (deptId: string) => request(`/categorization/dept/${deptId}/summary`),
   runCategorization: (deptId: string) => request('/categorization/predict', { method: 'POST', body: JSON.stringify({ dept_id: deptId }) }),
-  runForecast: (deptId: string, monthsAhead = 1) => request<ForecastRunResponse>('/budget/forecast', {
+  runForecast: (
+    deptId: string,
+    options: {
+      monthsAhead?: number;
+      sourceMode?: ForecastSourceMode;
+      uploadBatchId?: string | null;
+      dateFrom?: string | null;
+      dateTo?: string | null;
+    } = {},
+  ) => request<ForecastRunResponse>('/budget/forecast', {
     method: 'POST',
-    body: JSON.stringify({ dept_id: deptId, months_ahead: monthsAhead }),
+    body: JSON.stringify({
+      dept_id: deptId,
+      months_ahead: options.monthsAhead ?? 1,
+      source_mode: options.sourceMode ?? 'latest_batch',
+      upload_batch_id: options.uploadBatchId ?? null,
+      date_from: options.dateFrom ?? null,
+      date_to: options.dateTo ?? null,
+    }),
   }),
   forecasts: (deptId: string) => request<Forecast[]>(`/budget/dept/${deptId}/forecasts`),
+  uploadBatches: (deptId: string) => request<UploadBatchSummary[]>(`/budget/dept/${deptId}/upload-batches`),
+  forecastContext: (
+    deptId: string,
+    options: {
+      monthsAhead?: number;
+      sourceMode?: ForecastSourceMode;
+      uploadBatchId?: string | null;
+      dateFrom?: string | null;
+      dateTo?: string | null;
+    } = {},
+  ) => {
+    const params = new URLSearchParams();
+    params.set('months_ahead', String(options.monthsAhead ?? 3));
+    params.set('source_mode', options.sourceMode ?? 'latest_batch');
+    if (options.uploadBatchId) params.set('upload_batch_id', options.uploadBatchId);
+    if (options.dateFrom) params.set('date_from', options.dateFrom);
+    if (options.dateTo) params.set('date_to', options.dateTo);
+    return request<ForecastContextResponse>(`/budget/dept/${deptId}/forecast-context?${params.toString()}`);
+  },
   runForensic: (deptId: string, month: number, year: number) => request('/forensic/analyze', {
     method: 'POST',
     body: JSON.stringify({ dept_id: deptId, month, year }),

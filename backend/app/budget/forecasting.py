@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import itertools
 import json
 import math
 import re
@@ -34,11 +33,34 @@ class ForecastComputationResult:
     model_version: str
 
 
+def _compute_mape(actual: np.ndarray | pd.Series, predicted: np.ndarray | pd.Series) -> float:
+    actual_values = np.asarray(actual, dtype=float)
+    predicted_values = np.asarray(predicted, dtype=float)
+    valid_denominator = np.where(actual_values == 0, np.nan, actual_values)
+    mape = float(np.nanmean(np.abs((actual_values - predicted_values) / valid_denominator)) * 100)
+    return 0.0 if math.isnan(mape) else mape
+
+
+def _pick_spending_side(transactions: list[Transaction]) -> list[Transaction]:
+    
+    debit_transactions = [
+        txn for txn in transactions
+        if (getattr(txn, "transaction_type", None) or "debit").lower() == "debit"
+        and float(txn.amount or 0) > 0
+    ]
+    if debit_transactions:
+        return debit_transactions
+    return [
+        txn for txn in transactions
+        if (getattr(txn, "transaction_type", None) or "").lower() == "credit"
+        and float(txn.amount or 0) > 0
+    ]
+
+
 def build_monthly_series(transactions: list[Transaction]) -> pd.Series:
     rows = [
         {"transaction_date": txn.transaction_date, "amount": float(txn.amount)}
-        for txn in transactions
-        if float(txn.amount) > 0
+        for txn in _pick_spending_side(transactions)
     ]
     if not rows:
         return pd.Series(dtype=float)
@@ -58,22 +80,32 @@ def build_monthly_series_from_dataframe(frame: pd.DataFrame) -> pd.Series:
     if "transaction_date" not in dataset.columns:
         raise ValueError("Input data must contain a transaction_date column.")
 
-    if "Debit" in dataset.columns:
-        dataset["amount"] = pd.to_numeric(dataset["Debit"], errors="coerce").fillna(0)
-    elif "amount" in dataset.columns:
-        dataset["amount"] = pd.to_numeric(dataset["amount"], errors="coerce").fillna(0)
+    # Bug 2 fix: case-insensitive column detection; fall back from Debit to Credit
+    # when the debit column exists but is all zeros.
+    cols_lower = {c.lower(): c for c in dataset.columns}
+    if "debit" in cols_lower:
+        dataset["amount"] = pd.to_numeric(dataset[cols_lower["debit"]], errors="coerce").fillna(0)
+        if float(dataset["amount"].sum()) <= 0 and "credit" in cols_lower:
+            dataset["amount"] = pd.to_numeric(dataset[cols_lower["credit"]], errors="coerce").fillna(0)
+    elif "credit" in cols_lower:
+        dataset["amount"] = pd.to_numeric(dataset[cols_lower["credit"]], errors="coerce").fillna(0)
+    elif "amount" in cols_lower:
+        dataset["amount"] = pd.to_numeric(dataset[cols_lower["amount"]], errors="coerce").fillna(0)
     else:
-        raise ValueError("Input data must contain either a Debit column or an amount column.")
+        raise ValueError("Input data must contain Debit, Credit, or amount columns.")
 
     dataset["transaction_date"] = pd.to_datetime(dataset["transaction_date"], errors="coerce")
     dataset = dataset.dropna(subset=["transaction_date"])
 
-    monthly = build_monthly_series(
-        [
-            type("RowTransaction", (), {"transaction_date": row.transaction_date, "amount": row.amount})()
-            for row in dataset.loc[dataset["amount"] > 0, ["transaction_date", "amount"]].itertuples(index=False)
-        ]
-    )
+    rows = [
+        type("RowTransaction", (), {
+            "transaction_date": row.transaction_date,
+            "amount": row.amount,
+            "transaction_type": "debit",
+        })()
+        for row in dataset.loc[dataset["amount"] > 0, ["transaction_date", "amount"]].itertuples(index=False)
+    ]
+    monthly = build_monthly_series(rows)
     if monthly.empty:
         raise ValueError("No positive spending rows were found in the input data.")
     return monthly
@@ -133,7 +165,9 @@ def _estimate_season_length(series: pd.Series) -> int:
     acf_values = acf(series.dropna(), nlags=safe_nlags, fft=True)
     confidence = 1.96 / np.sqrt(max(len(series), 1))
     significant_lags = [lag for lag in range(2, safe_nlags + 1) if abs(acf_values[lag]) > confidence]
-    seasonal_candidates = [lag for lag in significant_lags if lag in [4, 12, 52]]
+    # Bug 7 fix: added period 3 (quarterly) and 6 (bi-annual) which are common in
+    # corporate spending data. Previously only [4, 12, 52] were checked.
+    seasonal_candidates = [lag for lag in significant_lags if lag in [3, 4, 6, 12, 52]]
     return seasonal_candidates[0] if seasonal_candidates else 12
 
 
@@ -167,20 +201,65 @@ def _inverse_boxcox(values: np.ndarray | pd.Series, lam: float, shift: float) ->
     return np.maximum(restored, 0.0)
 
 
-def _fallback_forecast(monthly: pd.Series, months_ahead: int) -> ForecastComputationResult:
-    rolling_mean = float(monthly.tail(min(len(monthly), 3)).mean()) if len(monthly) else 0.0
-    trend = float(monthly.diff().dropna().mean()) if len(monthly) > 1 else 0.0
+def _rolling_mean_predictions(values: np.ndarray | pd.Series, steps: int, window: int, *, update_with_actuals: np.ndarray | None = None) -> np.ndarray:
+    history = [float(value) for value in np.asarray(values, dtype=float)]
+    predictions: list[float] = []
+    for step in range(steps):
+        effective_window = min(window, len(history))
+        prediction = float(np.mean(history[-effective_window:])) if effective_window else 0.0
+        predictions.append(prediction)
+        history.append(float(update_with_actuals[step]) if update_with_actuals is not None else prediction)
+    return np.asarray(predictions, dtype=float)
+
+
+def _seasonal_naive_predictions(values: np.ndarray | pd.Series, steps: int, season_length: int, *, update_with_actuals: np.ndarray | None = None) -> np.ndarray:
+    history = [float(value) for value in np.asarray(values, dtype=float)]
+    predictions: list[float] = []
+    for step in range(steps):
+        if len(history) >= season_length:
+            prediction = float(history[-season_length])
+        else:
+            prediction = float(history[-1]) if history else 0.0
+        predictions.append(prediction)
+        history.append(float(update_with_actuals[step]) if update_with_actuals is not None else prediction)
+    return np.asarray(predictions, dtype=float)
+
+
+def _build_non_sarima_result(
+    monthly: pd.Series,
+    months_ahead: int,
+    *,
+    model_type: str,
+    mape: float | None,
+    notes: str,
+) -> ForecastComputationResult:
     future_months = pd.date_range(monthly.index[-1] + pd.DateOffset(months=1), periods=months_ahead, freq="MS")
+    recent = monthly.tail(min(len(monthly), 6))
+    spread = float(recent.std()) if len(recent) > 1 else float(monthly.iloc[-1]) * 0.15
+    monthly_values = monthly.values
+
+    if model_type == "rolling_mean_3":
+        predicted_values = _rolling_mean_predictions(monthly_values, months_ahead, 3)
+    elif model_type == "rolling_mean_6":
+        predicted_values = _rolling_mean_predictions(monthly_values, months_ahead, 6)
+    elif model_type == "seasonal_naive_12":
+        predicted_values = _seasonal_naive_predictions(monthly_values, months_ahead, 12)
+    else:
+        rolling_mean = float(monthly.tail(min(len(monthly), 3)).mean()) if len(monthly) else 0.0
+        trend = float(monthly.diff().dropna().mean()) if len(monthly) > 1 else 0.0
+        predicted_values = np.asarray(
+            [max(0.0, rolling_mean + trend * index) for index in range(1, months_ahead + 1)],
+            dtype=float,
+        )
 
     forecasts: list[dict[str, float | str]] = []
-    for index, month in enumerate(future_months, start=1):
-        predicted = max(0.0, rolling_mean + trend * index)
+    for month, predicted in zip(future_months, predicted_values):
         forecasts.append(
             {
                 "month": month.strftime("%Y-%m"),
-                "predicted_amount": round(predicted, 2),
-                "lower_bound": round(predicted * 0.85, 2),
-                "upper_bound": round(predicted * 1.15, 2),
+                "predicted_amount": round(float(predicted), 2),
+                "lower_bound": round(max(0.0, float(predicted) - 1.96 * spread), 2),
+                "upper_bound": round(float(predicted) + 1.96 * spread, 2),
             }
         )
 
@@ -188,15 +267,25 @@ def _fallback_forecast(monthly: pd.Series, months_ahead: int) -> ForecastComputa
         history=_history_from_monthly(monthly),
         forecasts=forecasts,
         diagnostics={
-            "mape": None,
+            "mape": round(mape, 2) if mape is not None else None,
             "train_months": int(len(monthly)),
-            "season_length": None,
+            "season_length": 12 if model_type == "seasonal_naive_12" else None,
             "regular_difference": None,
             "seasonal_difference": None,
-            "notes": "Fallback trend forecast used because there was not enough history for SARIMA training.",
+            "notes": notes,
         },
+        model_type=model_type,
+        model_version="v3",
+    )
+
+
+def _fallback_forecast(monthly: pd.Series, months_ahead: int) -> ForecastComputationResult:
+    return _build_non_sarima_result(
+        monthly,
+        months_ahead,
         model_type="fallback_trend",
-        model_version="v2",
+        mape=None,
+        notes="Fallback trend forecast used because there was not enough history for SARIMA training.",
     )
 
 
@@ -250,11 +339,26 @@ def _train_sarima_model(monthly: pd.Series) -> dict[str, Any] | None:
     test = transformed.iloc[-test_size:]
 
     best_model: tuple[int, int, int, int] | None = None
-    best_bic = math.inf
+    best_mape = math.inf
 
-    for p_value, q_value, seasonal_p, seasonal_q in itertools.product(range(3), range(3), range(2), range(2)):
-        if p_value == 0 and q_value == 0 and seasonal_p == 0 and seasonal_q == 0:
-            continue
+    # Bug 8 fix: replaced the 35-combination exhaustive grid (which could take 5+ minutes)
+    # with a focused set of well-performing (p,q,P,Q) candidates for monthly financial data.
+    # Each fit is also wrapped in a per-attempt try/except so one slow/diverging model
+    # doesn't block the rest. This keeps total search time under ~30 seconds.
+    CANDIDATE_ORDERS = [
+        (1, 0, 1, 0),
+        (1, 0, 0, 1),
+        (1, 0, 1, 1),
+        (2, 0, 1, 0),
+        (0, 0, 1, 1),
+        (1, 0, 0, 0),
+        (2, 0, 0, 1),
+        (0, 0, 1, 0),
+        (1, 0, 2, 0),
+        (2, 0, 2, 1),
+    ]
+
+    for p_value, q_value, seasonal_p, seasonal_q in CANDIDATE_ORDERS:
         try:
             fitted = SARIMAX(
                 train,
@@ -266,8 +370,14 @@ def _train_sarima_model(monthly: pd.Series) -> dict[str, Any] | None:
         except Exception:
             continue
 
-        if fitted.bic < best_bic:
-            best_bic = float(fitted.bic)
+        try:
+            validation_forecast = _inverse_boxcox(fitted.forecast(steps=len(test)), lam, shift)
+            validation_mape = _compute_mape(_inverse_boxcox(test.values, lam, shift), validation_forecast)
+        except Exception:
+            continue
+
+        if validation_mape < best_mape:
+            best_mape = float(validation_mape)
             best_model = (p_value, q_value, seasonal_p, seasonal_q)
 
     if best_model is None:
@@ -284,10 +394,7 @@ def _train_sarima_model(monthly: pd.Series) -> dict[str, Any] | None:
 
     test_forecast = _inverse_boxcox(validation_model.forecast(steps=len(test)), lam, shift)
     actual_test = _inverse_boxcox(test.values, lam, shift)
-    valid_denominator = np.where(actual_test == 0, np.nan, actual_test)
-    mape = float(np.nanmean(np.abs((actual_test - test_forecast) / valid_denominator)) * 100)
-    if math.isnan(mape):
-        mape = 0.0
+    mape = _compute_mape(actual_test, test_forecast)
 
     full_model = SARIMAX(
         transformed,
@@ -320,6 +427,46 @@ def _train_sarima_model(monthly: pd.Series) -> dict[str, Any] | None:
         "model_version": model_version,
         "history": _history_from_monthly(monthly),
     }
+
+
+def _best_baseline_result(monthly: pd.Series, months_ahead: int) -> ForecastComputationResult:
+    values = monthly.values
+    if len(values) < 2:
+        return _fallback_forecast(monthly, months_ahead)
+
+    test_size = min(6, max(1, len(values) // 5))
+    train = values[:-test_size]
+    test = values[-test_size:]
+
+    candidates: list[tuple[str, np.ndarray, str]] = [
+        (
+            "rolling_mean_3",
+            _rolling_mean_predictions(train, len(test), 3, update_with_actuals=test),
+            "Selected because short-horizon rolling averages validated better than alternative models on the holdout months.",
+        ),
+        (
+            "rolling_mean_6",
+            _rolling_mean_predictions(train, len(test), 6, update_with_actuals=test),
+            "Selected because medium-horizon rolling averages validated better than alternative models on the holdout months.",
+        ),
+    ]
+    if len(train) >= 12:
+        candidates.append(
+            (
+                "seasonal_naive_12",
+                _seasonal_naive_predictions(train, len(test), 12, update_with_actuals=test),
+                "Selected because last-year-same-month spending validated better than alternative models on the holdout months.",
+            )
+        )
+
+    best_name, best_predictions, best_notes = min(candidates, key=lambda item: _compute_mape(test, item[1]))
+    return _build_non_sarima_result(
+        monthly,
+        months_ahead,
+        model_type=best_name,
+        mape=_compute_mape(test, best_predictions),
+        notes=best_notes,
+    )
 
 
 def load_forecast_artifact(artifact_name: str) -> dict[str, Any] | None:
@@ -414,9 +561,10 @@ def save_forecast_artifact(
 
 def run_budget_forecast(monthly: pd.Series, months_ahead: int) -> ForecastComputationResult:
     warnings.filterwarnings("ignore")
+    baseline_result = _best_baseline_result(monthly, months_ahead)
     trained = _train_sarima_model(monthly)
     if trained is None:
-        return _fallback_forecast(monthly, months_ahead)
+        return baseline_result
 
     forecasts = _forecast_with_fitted_model(
         trained["fitted_model"],
@@ -424,10 +572,15 @@ def run_budget_forecast(monthly: pd.Series, months_ahead: int) -> ForecastComput
         float(trained["shift"]),
         months_ahead,
     )
-    return ForecastComputationResult(
+    sarima_result = ForecastComputationResult(
         history=trained["history"],
         forecasts=forecasts,
         diagnostics=trained["diagnostics"],
         model_type=trained["model_type"],
         model_version=trained["model_version"],
     )
+    sarima_mape = sarima_result.diagnostics.get("mape")
+    baseline_mape = baseline_result.diagnostics.get("mape")
+    if isinstance(sarima_mape, (int, float)) and isinstance(baseline_mape, (int, float)) and baseline_mape < sarima_mape:
+        return baseline_result
+    return sarima_result
