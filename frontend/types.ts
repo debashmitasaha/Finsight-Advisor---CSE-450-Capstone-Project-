@@ -75,6 +75,8 @@ export interface Forecast {
   model_version: string | null;
 }
 
+export type ForecastSourceMode = 'latest_batch' | 'full_history' | 'upload_batch' | 'date_range';
+
 export interface ForecastDiagnostics {
   mape: number | null;
   train_months: number;
@@ -93,6 +95,27 @@ export interface ForecastRunResponse {
     model_version: string;
   };
   forecasts: Forecast[];
+}
+
+export interface ForecastContextResponse {
+  history: { month: string; amount: number }[];
+  diagnostics: ForecastDiagnostics | null;
+  model: {
+    model_type: string;
+    model_version: string;
+  } | null;
+  forecasts: Forecast[];
+}
+
+export interface UploadBatchSummary {
+  upload_batch_id: string;
+  source_file_name: string;
+  uploaded_at: string;
+  row_count: number;
+  status: string;
+  transaction_count: number;
+  first_transaction_date: string | null;
+  last_transaction_date: string | null;
 }
 
 export interface Anomaly {

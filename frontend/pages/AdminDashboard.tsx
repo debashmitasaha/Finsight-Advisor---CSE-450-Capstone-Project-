@@ -26,7 +26,16 @@ import {
 } from 'recharts';
 import Layout from '../components/Layout';
 import { api } from '../lib/api';
-import { Anomaly, Department, Forecast, ForecastDiagnostics, Transaction, UserAccount } from '../types';
+import {
+  Anomaly,
+  Department,
+  Forecast,
+  ForecastDiagnostics,
+  ForecastSourceMode,
+  Transaction,
+  UploadBatchSummary,
+  UserAccount,
+} from '../types';
 import { COLORS } from '../constants';
 
 interface AdminDashboardProps {
@@ -46,6 +55,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [forecastDiagnostics, setForecastDiagnostics] = useState<ForecastDiagnostics | null>(null);
   const [forecastModel, setForecastModel] = useState<{ model_type: string; model_version: string } | null>(null);
   const [monthsAhead, setMonthsAhead] = useState(3);
+  const [sourceMode, setSourceMode] = useState<ForecastSourceMode>('latest_batch');
+  const [uploadBatches, setUploadBatches] = useState<UploadBatchSummary[]>([]);
+  const [selectedBatchId, setSelectedBatchId] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
   const [groupingStats, setGroupingStats] = useState<any>(null);
   const [categorizationSummary, setCategorizationSummary] = useState<any>(null);
@@ -65,25 +79,40 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
 
   const loadDepartmentData = async (departmentId: string) => {
     if (!departmentId) return;
-    const [transactionData, forecastData, anomalyData, groupingData, categorizationData] = await Promise.all([
+    const [transactionData, anomalyData, groupingData, categorizationData, batchData] = await Promise.all([
       api.transactions(departmentId),
-      api.forecasts(departmentId),
       api.anomalies(departmentId),
       api.groupingStats(departmentId),
       api.categorizationSummary(departmentId),
+      api.uploadBatches(departmentId),
     ]);
     setTransactions(transactionData);
-    setForecasts(forecastData);
-    setForecastHistory([]);
-    setForecastDiagnostics(null);
-    setForecastModel(
-      forecastData[0]
-        ? { model_type: forecastData[0].model_type || 'saved_forecast', model_version: forecastData[0].model_version || 'unknown' }
-        : null,
-    );
     setAnomalies(anomalyData);
     setGroupingStats(groupingData);
     setCategorizationSummary(categorizationData);
+    setUploadBatches(batchData);
+  };
+
+  const loadForecastContext = async (departmentId: string) => {
+    if (!departmentId || !isForecastSourceReady(sourceMode, selectedBatchId, dateFrom, dateTo)) {
+      setForecasts([]);
+      setForecastHistory([]);
+      setForecastDiagnostics(null);
+      setForecastModel(null);
+      return;
+    }
+
+    const forecastContext = await api.forecastContext(departmentId, {
+      monthsAhead,
+      sourceMode,
+      uploadBatchId: selectedBatchId || null,
+      dateFrom: dateFrom || null,
+      dateTo: dateTo || null,
+    });
+    setForecasts(forecastContext.forecasts);
+    setForecastHistory(forecastContext.history);
+    setForecastDiagnostics(forecastContext.diagnostics);
+    setForecastModel(forecastContext.model);
   };
 
   useEffect(() => {
@@ -103,9 +132,34 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     }
   }, [selectedDeptId]);
 
+  useEffect(() => {
+    if (selectedDeptId) {
+      loadForecastContext(selectedDeptId).catch((err) => setStatus(err.message));
+    }
+  }, [selectedDeptId, monthsAhead, sourceMode, selectedBatchId, dateFrom, dateTo]);
+
+  useEffect(() => {
+    if (sourceMode !== 'upload_batch') {
+      setSelectedBatchId('');
+      return;
+    }
+    if (!uploadBatches.length) {
+      setSelectedBatchId('');
+      return;
+    }
+    if (!uploadBatches.some((batch) => batch.upload_batch_id === selectedBatchId)) {
+      setSelectedBatchId(uploadBatches[0].upload_batch_id);
+    }
+  }, [sourceMode, uploadBatches, selectedBatchId]);
+
   const selectedDepartment = useMemo(
     () => departments.find((department) => department.department_id === selectedDeptId) || null,
     [departments, selectedDeptId],
+  );
+
+  const selectedUploadBatch = useMemo(
+    () => uploadBatches.find((batch) => batch.upload_batch_id === selectedBatchId) || null,
+    [uploadBatches, selectedBatchId],
   );
 
   const triggerAction = async (action: 'group' | 'categorize' | 'forecast' | 'forensic') => {
@@ -115,7 +169,17 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     if (action === 'group') await api.runGrouping(selectedDeptId);
     if (action === 'categorize') await api.runCategorization(selectedDeptId);
     if (action === 'forecast') {
-      const result = await api.runForecast(selectedDeptId, monthsAhead);
+      if (!isForecastSourceReady(sourceMode, selectedBatchId, dateFrom, dateTo)) {
+        setStatus(sourceMode === 'upload_batch' ? 'Select an upload batch first.' : 'Choose both start and end dates first.');
+        return;
+      }
+      const result = await api.runForecast(selectedDeptId, {
+        monthsAhead,
+        sourceMode,
+        uploadBatchId: selectedBatchId || null,
+        dateFrom: dateFrom || null,
+        dateTo: dateTo || null,
+      });
       setForecasts(result.forecasts);
       setForecastHistory(result.history);
       setForecastDiagnostics(result.diagnostics);
@@ -172,6 +236,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     const history = (forecastHistory.length
       ? forecastHistory
       : spendTrend.map((point) => ({ month: point.month, amount: point.actual }))).slice(-6);
+    const chronologicalForecasts = [...forecasts].sort((left, right) =>
+      left.forecast_period_start.localeCompare(right.forecast_period_start),
+    );
 
     const historical = history.map((point) => ({
       month: formatShortMonth(point.month),
@@ -181,7 +248,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       upper: null as number | null,
     }));
 
-    const future = forecasts.map((forecast) => ({
+    const future = chronologicalForecasts.map((forecast) => ({
       month: formatShortMonth(forecast.forecast_period_start.slice(0, 7)),
       actual: null as number | null,
       forecast: Math.round(forecast.predicted_amount),
@@ -199,6 +266,16 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       spend: department.department_id === selectedDeptId ? Math.round(actualSpend) : Math.round(Number(department.annual_budget || 0) * 0.58),
     }));
   }, [departments, selectedDeptId, actualSpend]);
+
+  const latestForecasts = useMemo(
+    () => [...forecasts].sort((left, right) => right.forecast_period_start.localeCompare(left.forecast_period_start)),
+    [forecasts],
+  );
+
+  const sourceModeLabel = useMemo(
+    () => formatForecastSourceMode(sourceMode),
+    [sourceMode],
+  );
 
   const insightScore = forecastDiagnostics?.mape !== null && forecastDiagnostics?.mape !== undefined
     ? Math.max(72, Math.round(100 - forecastDiagnostics.mape))
@@ -335,6 +412,44 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
                   {[1, 2, 3, 6].map((value) => <option key={value} value={value}>{value} month{value > 1 ? 's' : ''}</option>)}
                 </select>
               </div>
+              <div className="mt-5">
+                <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Forecast Source</label>
+                <select value={sourceMode} onChange={(e) => setSourceMode(e.target.value as ForecastSourceMode)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700">
+                  <option value="latest_batch">Latest Upload Batch</option>
+                  <option value="full_history">Full Department History</option>
+                  <option value="upload_batch">Selected Upload Batch</option>
+                  <option value="date_range">Custom Date Range</option>
+                </select>
+              </div>
+              {sourceMode === 'upload_batch' && (
+                <div className="mt-5">
+                  <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Upload Batch</label>
+                  <select value={selectedBatchId} onChange={(e) => setSelectedBatchId(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700">
+                    {uploadBatches.map((batch) => (
+                      <option key={batch.upload_batch_id} value={batch.upload_batch_id}>
+                        {batch.source_file_name} ({batch.transaction_count} rows)
+                      </option>
+                    ))}
+                  </select>
+                  {selectedUploadBatch && (
+                    <p className="mt-2 text-xs font-medium text-slate-500">
+                      Range: {selectedUploadBatch.first_transaction_date || 'N/A'} to {selectedUploadBatch.last_transaction_date || 'N/A'}
+                    </p>
+                  )}
+                </div>
+              )}
+              {sourceMode === 'date_range' && (
+                <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div>
+                    <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Start Date</label>
+                    <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700" />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">End Date</label>
+                    <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700" />
+                  </div>
+                </div>
+              )}
             </div>
             <div className="rounded-[26px] bg-slate-950 p-5 text-white shadow-[0_24px_50px_rgba(15,23,42,0.24)]">
               <p className="text-[11px] font-black uppercase tracking-[0.22em] text-blue-200">Workflow</p>
@@ -450,6 +565,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
             <SectionKicker title="Forecast Summary" subtitle="Current forecast health and coverage." />
             <div className="mt-5 space-y-4">
               <DataPill label="Forecast Status" value={forecasts.length ? 'Ready' : 'Pending'} />
+              <DataPill label="Source" value={sourceModeLabel} />
               <DataPill label="Confidence" value={forecastDiagnostics?.mape !== null && forecastDiagnostics?.mape !== undefined ? `${Math.max(0, Math.round(100 - forecastDiagnostics.mape))}%` : 'N/A'} />
               <DataPill label="MAPE" value={forecastDiagnostics?.mape !== null && forecastDiagnostics?.mape !== undefined ? `${forecastDiagnostics.mape}%` : 'N/A'} />
               <DataPill label="Coverage" value={`${forecastDiagnostics?.train_months || 0} months`} />
@@ -464,7 +580,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
           <div className={`${shellCard} p-7`}>
             <SectionKicker title="Latest Forecasts" subtitle="Confidence-bounded projections." />
             <div className="mt-5 space-y-3">
-              {forecasts.map((forecast) => (
+              {latestForecasts.map((forecast) => (
                 <div key={forecast.forecast_id} className="rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-4">
                   <div className="flex items-start justify-between gap-4">
                     <div>
@@ -684,5 +800,23 @@ const formatShortMonth = (value: string) =>
   value.length === 7
     ? new Date(`${value}-01T00:00:00`).toLocaleDateString(undefined, { month: 'short' })
     : value;
+
+const isForecastSourceReady = (
+  sourceMode: ForecastSourceMode,
+  selectedBatchId: string,
+  dateFrom: string,
+  dateTo: string,
+) => {
+  if (sourceMode === 'upload_batch') return Boolean(selectedBatchId);
+  if (sourceMode === 'date_range') return Boolean(dateFrom && dateTo);
+  return true;
+};
+
+const formatForecastSourceMode = (sourceMode: ForecastSourceMode) => {
+  if (sourceMode === 'latest_batch') return 'Latest Batch';
+  if (sourceMode === 'full_history') return 'Full History';
+  if (sourceMode === 'upload_batch') return 'Selected Batch';
+  return 'Date Range';
+};
 
 export default AdminDashboard;
