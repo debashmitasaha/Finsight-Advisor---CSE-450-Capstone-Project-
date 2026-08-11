@@ -66,6 +66,44 @@ class TransactionUpdate(BaseModel):
 REQUIRED_COLUMNS = ["transaction_date", "amount", "description", "chart_acc_head"]
 
 
+def normalize_upload_columns(dataframe: pd.DataFrame) -> pd.DataFrame:
+    normalized = dataframe.copy()
+    column_aliases = {
+        "amount": ["Debit", "debit"],
+        "description": ["narration", "Narration"],
+        "chart_acc_head": ["chart_of_acc_head", "Chart of Account Head", "chart_account_head"],
+        "group_name": ["account_head_group", "Account Head Group"],
+        "group_no": ["Group No", "group", "group_number"],
+        "payment_method": ["Voucher_Type", "voucher_type"],
+        "invoice_id": ["voucher_number", "Voucher Number"],
+        "po_number": ["ref_number", "Reference Number"],
+    }
+
+    for target, aliases in column_aliases.items():
+        if target in normalized.columns:
+            continue
+        source = next((alias for alias in aliases if alias in normalized.columns), None)
+        if source:
+            normalized[target] = normalized[source]
+
+    return normalized
+
+
+def optional_text(row: pd.Series, column: str) -> Optional[str]:
+    value = row.get(column)
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def optional_float(row: pd.Series, column: str) -> Optional[float]:
+    value = row.get(column)
+    if value is None or pd.isna(value):
+        return None
+    return float(value)
+
+
 def serialize_transaction(txn: Transaction) -> TransactionResponse:
     return TransactionResponse(
         transaction_id=txn.transaction_id,
@@ -106,6 +144,7 @@ async def upload_transactions(
     try:
         contents = await file.read()
         dataframe = read_uploaded_file(file.filename or "upload.csv", contents)
+        dataframe = normalize_upload_columns(dataframe)
         ensure_dataframe_columns(dataframe, REQUIRED_COLUMNS)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -131,11 +170,13 @@ async def upload_transactions(
         try:
             transaction_date = pd.to_datetime(row["transaction_date"], utc=True).to_pydatetime()
             amount = float(row["amount"])
-            description = None if pd.isna(row.get("description")) else str(row.get("description"))
-            chart_acc_head = None if pd.isna(row.get("chart_acc_head")) else str(row.get("chart_acc_head"))
+            description = optional_text(row, "description")
+            chart_acc_head = optional_text(row, "chart_acc_head")
             cleaned_chart = clean_chart_account_head(chart_acc_head)
-            invoice_id = None if pd.isna(row.get("invoice_id")) else str(row.get("invoice_id"))
-            po_number = None if pd.isna(row.get("po_number")) else str(row.get("po_number"))
+            invoice_id = optional_text(row, "invoice_id")
+            po_number = optional_text(row, "po_number")
+            group_name = optional_text(row, "group_name")
+            group_no = optional_float(row, "group_no")
 
             dedupe_hash = compute_dedupe_hash(
                 dept_id,
@@ -157,7 +198,9 @@ async def upload_transactions(
                 category="uncategorized",
                 chart_acc_head=chart_acc_head,
                 cleaned_chart_acc_head=cleaned_chart,
-                payment_method=None if pd.isna(row.get("payment_method")) else str(row.get("payment_method")),
+                group_no=group_no,
+                group_name=group_name,
+                payment_method=optional_text(row, "payment_method"),
                 invoice_id=invoice_id,
                 po_number=po_number,
                 has_receipt=normalize_bool(row.get("has_receipt")),

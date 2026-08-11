@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import datetime
-from statistics import mean, median
+from statistics import mean, median, stdev
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -15,14 +15,15 @@ from app.models import Anomaly, CaseAssignment, CaseTransaction, Department, Tra
 router = APIRouter(prefix="/forensic", tags=["Forensic"])
 
 BENFORD = {1: 0.301, 2: 0.176, 3: 0.125, 4: 0.097, 5: 0.079, 6: 0.067, 7: 0.058, 8: 0.051, 9: 0.046}
+FORENSIC_ANOMALY_TYPES = ("benford", "zscore", "rsf")
 
 
 class ForensicRequest(BaseModel):
     dept_id: str
     month: int
     year: int
-    zscore_threshold: float = 2.5
-    rsf_threshold: float = 3.0
+    zscore_threshold: float = 3.0
+    rsf_threshold: float = 10.0
     benford_threshold: float = 0.2
 
 
@@ -44,6 +45,34 @@ def ensure_case(db: Session, dept_id: str, anomaly_type: str, period_label: str)
     db.add(case)
     db.flush()
     return case
+
+
+def cohort_key(txn: Transaction) -> str:
+    return txn.cleaned_chart_acc_head or txn.chart_acc_head or txn.group_name or "ungrouped"
+
+
+def reset_period_forensic_flags(db: Session, transactions: list[Transaction]) -> None:
+    transaction_ids = [txn.transaction_id for txn in transactions]
+    if not transaction_ids:
+        return
+
+    stale_anomalies = (
+        db.query(Anomaly)
+        .filter(Anomaly.transaction_id.in_(transaction_ids))
+        .filter(Anomaly.anomaly_type.in_(FORENSIC_ANOMALY_TYPES))
+        .filter(Anomaly.is_resolved.is_(False))
+        .all()
+    )
+    stale_transaction_ids = {anomaly.transaction_id for anomaly in stale_anomalies}
+
+    for anomaly in stale_anomalies:
+        anomaly.is_resolved = True
+
+    for txn in transactions:
+        if txn.transaction_id in stale_transaction_ids:
+            txn.is_flagged = False
+            txn.flagged_reason = None
+            txn.risk_score = 0
 
 
 def upsert_anomaly(db: Session, txn: Transaction, anomaly_type: str, score: float, threshold: float, evidence: dict):
@@ -86,13 +115,17 @@ def run_forensic_analysis(payload: ForensicRequest, current_user: User = Depends
     if not transactions:
         return {"success": True, "message": "No transactions for period", "total_anomalies": 0}
 
+    reset_period_forensic_flags(db, transactions)
+
     total_created = 0
     benford_count = 0
     zscore_count = 0
     rsf_count = 0
     period_label = f"{payload.year}-{payload.month:02d}"
 
-    digits = [int(str(int(abs(float(txn.amount))))[0]) for txn in transactions if float(txn.amount) > 0]
+    analysis_transactions = [txn for txn in transactions if float(txn.amount) > 0]
+
+    digits = [int(str(int(abs(float(txn.amount))))[0]) for txn in analysis_transactions]
     digit_counts = Counter(digits)
     total_digits = len(digits) or 1
     deviating_digits = {
@@ -102,8 +135,8 @@ def run_forensic_analysis(payload: ForensicRequest, current_user: User = Depends
     }
     if deviating_digits:
         ensure_case(db, payload.dept_id, "benford", period_label)
-    for txn in transactions:
-        leading_digit = int(str(int(abs(float(txn.amount))))[0]) if float(txn.amount) > 0 else None
+    for txn in analysis_transactions:
+        leading_digit = int(str(int(abs(float(txn.amount))))[0])
         if leading_digit in deviating_digits:
             evidence = {
                 "digit": leading_digit,
@@ -120,19 +153,18 @@ def run_forensic_analysis(payload: ForensicRequest, current_user: User = Depends
                 total_created += 1
 
     cohorts = defaultdict(list)
-    for txn in transactions:
-        cohorts[txn.group_name or "ungrouped"].append(txn)
+    for txn in analysis_transactions:
+        cohorts[cohort_key(txn)].append(txn)
 
     for group_name, cohort in cohorts.items():
         amounts = [float(txn.amount) for txn in cohort]
-        if len(amounts) >= 3:
+        if len(amounts) >= 5:
             avg = mean(amounts)
-            variance = sum((amount - avg) ** 2 for amount in amounts) / len(amounts)
-            std = variance ** 0.5
+            std = stdev(amounts)
             if std > 0:
                 for txn in cohort:
                     z_score = abs((float(txn.amount) - avg) / std)
-                    if z_score >= payload.zscore_threshold:
+                    if z_score > payload.zscore_threshold:
                         evidence = {"group_name": group_name, "mean": avg, "std": std, "period": period_label}
                         _, created = upsert_anomaly(db, txn, "zscore", z_score, payload.zscore_threshold, evidence)
                         txn.is_flagged = True
@@ -147,7 +179,7 @@ def run_forensic_analysis(payload: ForensicRequest, current_user: User = Depends
             if cohort_median > 0:
                 for txn in cohort:
                     rsf = float(txn.amount) / cohort_median
-                    if rsf >= payload.rsf_threshold:
+                    if rsf > payload.rsf_threshold:
                         evidence = {"group_name": group_name, "median": cohort_median, "period": period_label}
                         _, created = upsert_anomaly(db, txn, "rsf", rsf, payload.rsf_threshold, evidence)
                         txn.is_flagged = True

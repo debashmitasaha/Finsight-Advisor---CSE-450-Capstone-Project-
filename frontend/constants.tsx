@@ -29,6 +29,7 @@ export const SIDEBAR_ITEMS = {
     { name: 'Employees', icon: Users, path: '/employees' },
     { name: 'Dept Control', icon: Settings, path: '/dept-control' },
     { name: 'Dept Status', icon: PieChart, path: '/dept-status' },
+    { name: 'Forensic Lab', icon: ShieldAlert, path: '/forensic' },
     { name: 'Reports', icon: FileSearch, path: '/reports' },
     { name: 'History', icon: Clock3, path: '/history' },
     { name: 'Audit Logs', icon: Activity, path: '/audit-logs' },

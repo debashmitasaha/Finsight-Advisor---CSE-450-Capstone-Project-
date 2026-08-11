@@ -5,12 +5,15 @@ import {
   BarChart3,
   CheckCircle2,
   CircleDollarSign,
+  Eye,
   FileUp,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
   TrendingUp,
   Upload,
   WalletCards,
+  X,
 } from 'lucide-react';
 import {
   Area,
@@ -32,6 +35,7 @@ import {
   Forecast,
   ForecastDiagnostics,
   ForecastSourceMode,
+  ForensicRunResponse,
   Transaction,
   UploadBatchSummary,
   UserAccount,
@@ -65,6 +69,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [categorizationSummary, setCategorizationSummary] = useState<any>(null);
   const [employees, setEmployees] = useState<UserAccount[]>([]);
   const [file, setFile] = useState<File | null>(null);
+  const [forensicFile, setForensicFile] = useState<File | null>(null);
+  const [forensicMonth, setForensicMonth] = useState('2022-08');
+  const [forensicResult, setForensicResult] = useState<ForensicRunResponse | null>(null);
+  const [selectedAnomaly, setSelectedAnomaly] = useState<Anomaly | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -120,6 +128,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       setLoading(true);
       try {
         await loadBase();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unable to load admin data';
+        setStatus(message.includes('Authentication') ? 'Your session expired. Please log out and log in again.' : message);
       } finally {
         setLoading(false);
       }
@@ -131,7 +142,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       loadDepartmentData(selectedDeptId).catch((err) => setStatus(err.message));
     }
   }, [selectedDeptId]);
-
   useEffect(() => {
     if (selectedDeptId) {
       loadForecastContext(selectedDeptId).catch((err) => setStatus(err.message));
@@ -152,6 +162,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     }
   }, [sourceMode, uploadBatches, selectedBatchId]);
 
+  useEffect(() => {
+    if (!selectedAnomaly) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSelectedAnomaly(null);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedAnomaly]);
+
   const selectedDepartment = useMemo(
     () => departments.find((department) => department.department_id === selectedDeptId) || null,
     [departments, selectedDeptId],
@@ -162,10 +181,103 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     [uploadBatches, selectedBatchId],
   );
 
+  const transactionById = useMemo(() => {
+    return new Map(transactions.map((transaction) => [transaction.transaction_id, transaction]));
+  }, [transactions]);
+
+  const activeAnomalies = useMemo(
+    () => anomalies.filter((anomaly) => !anomaly.is_resolved),
+    [anomalies],
+  );
+
+  const anomalyCounts = useMemo(() => {
+    return activeAnomalies.reduce(
+      (counts, anomaly) => {
+        const key = anomaly.anomaly_type.toLowerCase();
+        if (key.includes('benford')) counts.benford += 1;
+        if (key.includes('zscore')) counts.zscore += 1;
+        if (key.includes('rsf')) counts.rsf += 1;
+        return counts;
+      },
+      { benford: 0, zscore: 0, rsf: 0 },
+    );
+  }, [activeAnomalies]);
+
+  const flaggedRows = useMemo(() => {
+    const rows = new Map<string, { transaction: Transaction | null; anomalies: Anomaly[] }>();
+    activeAnomalies.forEach((anomaly) => {
+      const existing = rows.get(anomaly.transaction_id) || {
+        transaction: transactionById.get(anomaly.transaction_id) || null,
+        anomalies: [],
+      };
+      existing.anomalies.push(anomaly);
+      rows.set(anomaly.transaction_id, existing);
+    });
+    return Array.from(rows.values());
+  }, [activeAnomalies, transactionById]);
+
+  const parseForensicMonth = () => {
+    const [year, month] = forensicMonth.split('-').map(Number);
+    return { month, year };
+  };
+
+  const runForensicAnalysis = async () => {
+    if (!selectedDeptId) return;
+    const { month, year } = parseForensicMonth();
+    try {
+      setStatus(`Running forensic scan for ${formatMonthLabel(`${year}-${String(month).padStart(2, '0')}`)}...`);
+      const result = await api.runForensic(selectedDeptId, month, year);
+      setForensicResult(result);
+      await loadDepartmentData(selectedDeptId);
+
+      if (result.message) {
+        setStatus(result.message);
+        return;
+      }
+
+      setStatus(
+        `Forensic completed: ${result.total_anomalies} anomalies found ` +
+        `(Benford: ${result.benford_anomalies || 0}, Z-score: ${result.zscore_anomalies || 0}, RSF: ${result.rsf_anomalies || 0}).`
+      );
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : 'Unable to run forensic scan.');
+    }
+  };
+
+  const handleForensicUpload = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selectedDeptId) {
+      setStatus('Choose a department before uploading forensic data.');
+      return;
+    }
+    if (!forensicFile) {
+      setStatus('Choose a ledger file before uploading.');
+      return;
+    }
+    try {
+      setStatus('Uploading monthly forensic ledger...');
+      await api.uploadTransactions(selectedDeptId, forensicFile);
+      await loadDepartmentData(selectedDeptId);
+      setStatus('Monthly transaction data uploaded. Run forensic scan next.');
+      setForensicFile(null);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : 'Unable to upload forensic data.');
+    }
+  };
+
+  const handleUndoAnomaly = async (anomalyId: string) => {
+    try {
+      await api.resolveAnomaly(anomalyId);
+      await loadDepartmentData(selectedDeptId);
+      if (selectedAnomaly?.anomaly_id === anomalyId) setSelectedAnomaly(null);
+      setStatus('Anomaly flag undone.');
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : 'Unable to undo anomaly flag.');
+    }
+  };
   const triggerAction = async (action: 'group' | 'categorize' | 'forecast' | 'forensic') => {
     if (!selectedDeptId) return;
     setStatus(`Running ${action}...`);
-    const now = new Date();
     if (action === 'group') await api.runGrouping(selectedDeptId);
     if (action === 'categorize') await api.runCategorization(selectedDeptId);
     if (action === 'forecast') {
@@ -187,7 +299,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       setStatus('Budget forecast updated successfully.');
       return;
     }
-    if (action === 'forensic') await api.runForensic(selectedDeptId, now.getMonth() + 1, now.getFullYear());
+    if (action === 'forensic') {
+      await runForensicAnalysis();
+      return;
+    }
+    
     await loadDepartmentData(selectedDeptId);
     setStatus(`${action} completed successfully.`);
   };
@@ -472,6 +588,144 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     </div>
   );
 
+  const forensicView = (
+    <div className="space-y-8">
+      <HeroHeader
+        eyebrow="Forensic Lab"
+        title={`${selectedDepartment?.department_name || 'Department'} Anomaly Review`}
+        description="Upload a monthly transaction ledger, run Benford, Z-score, and RSF checks, then inspect every generated flag."
+        actionLabel="Audit"
+      />
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        <ExecutiveMetric label="Open Flags" value={activeAnomalies.length} note="Detected by forensic laws" accent="negative" icon={AlertTriangle} />
+        <ExecutiveMetric label="Flagged Transactions" value={flaggedRows.length} note="Unique ledger rows under review" accent="negative" icon={ShieldAlert} />
+        <ExecutiveMetric label="Integrity Score" value={`${Math.max(70, 100 - activeAnomalies.length * 4).toFixed(1)}%`} note={formatMonthLabel(forensicMonth)} accent="neutral" icon={ShieldCheck} />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[0.86fr,1.14fr] gap-6">
+        <form className={`${shellCard} p-7 bg-[radial-gradient(circle_at_top_left,_rgba(239,68,68,0.10),_transparent_42%),white]`} onSubmit={handleForensicUpload}>
+          <SectionKicker title="Monthly Ledger Upload" subtitle="Add the transaction file for the month you want to audit." />
+          <div className="mt-6 space-y-4">
+            <div className="rounded-[26px] border border-slate-200 bg-slate-50 p-4">
+              <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Department</label>
+              <select value={selectedDeptId} onChange={(event) => setSelectedDeptId(event.target.value)} disabled={!departments.length} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100">
+                {!departments.length && <option value="">No departments loaded</option>}
+                {departments.map((department) => <option key={department.department_id} value={department.department_id}>{department.department_name}</option>)}
+              </select>
+            </div>
+
+            <div className="rounded-[26px] border border-slate-200 bg-slate-50 p-4">
+              <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Audit Month</label>
+              <input
+                type="month"
+                value={forensicMonth}
+                onChange={(event) => setForensicMonth(event.target.value)}
+                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700"
+              />
+            </div>
+
+            <label className="block rounded-[26px] border border-dashed border-red-200 bg-red-50/70 p-6 cursor-pointer transition hover:border-red-400 hover:bg-red-50">
+              <div className="flex items-center gap-4">
+                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-red-600 shadow-sm">
+                  <Upload size={22} />
+                </div>
+                <div>
+                  <p className="font-bold text-slate-900">{forensicFile ? forensicFile.name : 'Upload monthly ledger'}</p>
+                  <p className="text-sm text-slate-500 mt-1">Supports normalized files and ledgers with Debit/narration/chart_of_acc_head columns.</p>
+                </div>
+              </div>
+              <input type="file" accept=".csv,.xls,.xlsx" onChange={(event) => setForensicFile(event.target.files?.[0] || null)} className="hidden" />
+            </label>
+
+            <button type="submit" disabled={!selectedDeptId || !forensicFile} className={`inline-flex w-full items-center justify-center gap-2 rounded-2xl px-5 py-4 font-bold text-white shadow-[0_20px_40px_rgba(15,23,42,0.15)] ${selectedDeptId && forensicFile ? 'bg-slate-950' : 'bg-slate-300 cursor-not-allowed'}`}>
+              <FileUp size={18} />
+              Upload Month Data
+            </button>
+          </div>
+        </form>
+
+        <div className={`${shellCard} p-7`}>
+          <SectionKicker title="Detection Laws" subtitle="Run the backend forensic checks against the selected month." />
+          <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+            <ForensicLawCard title="Benford" value={anomalyCounts.benford} description="Flags unusual leading-digit distributions." />
+            <ForensicLawCard title="Z-score" value={anomalyCounts.zscore} description="Flags outliers inside transaction groups." />
+            <ForensicLawCard title="RSF" value={anomalyCounts.rsf} description="Flags amounts far above their cohort median." />
+          </div>
+
+          <button type="button" disabled={!selectedDeptId} onClick={runForensicAnalysis} className={`mt-6 inline-flex w-full items-center justify-center gap-2 rounded-[24px] px-5 py-4 font-black text-white shadow-[0_20px_40px_rgba(239,68,68,0.20)] transition ${selectedDeptId ? 'bg-red-600 hover:bg-red-700' : 'bg-slate-300 cursor-not-allowed'}`}>
+            <AlertTriangle size={18} />
+            Run Forensic Scan
+          </button>
+
+          {forensicResult && (
+            <div className="mt-5 rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+              <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Latest Run</p>
+              <p className="mt-2 text-sm font-semibold text-slate-700">
+                {forensicResult.message || `${forensicResult.total_anomalies} anomalies detected for ${formatMonthLabel(forensicMonth)}.`}
+              </p>
+            </div>
+          )}
+
+          {status && <p className="mt-5 text-sm font-semibold text-blue-700">{status}</p>}
+        </div>
+      </div>
+
+      <div className={`${shellCard} p-7`}>
+        <SectionKicker title="Generated Flags" subtitle="Open each explanation to see which law flagged the transaction and the evidence behind it." />
+        <div className="mt-6 space-y-4">
+          {flaggedRows.map(({ transaction, anomalies: rowAnomalies }) => (
+            <div key={rowAnomalies[0].transaction_id} className="rounded-[26px] border border-red-100 bg-red-50/60 p-5">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap gap-2">
+                    {rowAnomalies.map((anomaly) => (
+                      <span key={anomaly.anomaly_id} className="rounded-full border border-red-200 bg-white px-3 py-1 text-[11px] font-black uppercase tracking-[0.16em] text-red-700">
+                        {formatAnomalyType(anomaly.anomaly_type)}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="mt-3 font-black text-slate-950">{transaction?.description || 'Flagged transaction'}</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-500">
+                    {transaction ? `${formatDate(transaction.transaction_date)} | TK ${transaction.amount.toLocaleString()} | ${transaction.group_name || transaction.chart_acc_head || 'Ungrouped'}` : rowAnomalies[0].transaction_id}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {rowAnomalies.map((anomaly) => (
+                    <div key={anomaly.anomaly_id} className="flex flex-wrap gap-2">
+                      <button type="button" onClick={() => setSelectedAnomaly(anomaly)} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-white px-4 py-3 text-sm font-black text-red-700 shadow-sm transition hover:bg-red-100">
+                        <Eye size={16} />
+                        View {formatAnomalyType(anomaly.anomaly_type)}
+                      </button>
+                      <button type="button" onClick={() => handleUndoAnomaly(anomaly.anomaly_id)} className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-600 shadow-sm transition hover:bg-slate-100">
+                        <X size={16} />
+                        Undo Flag
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {!flaggedRows.length && (
+            <div className="rounded-[26px] border border-slate-200 bg-slate-50 p-6">
+              <div className="flex items-center gap-4">
+                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
+                  <ShieldCheck size={22} />
+                </div>
+                <div>
+                  <p className="font-black text-slate-950">No generated flags yet</p>
+                  <p className="mt-1 text-sm text-slate-500">Upload a monthly ledger, choose the month, then run the forensic scan.</p>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
   const reports = (
     <div className="space-y-8">
       <HeroHeader
@@ -682,15 +936,97 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         ? deptControl
         : activePath === '/dept-status'
           ? deptStatus
-          : activePath === '/reports'
-            ? reports
-            : activePath === '/history'
-              ? historyView
-              : activePath === '/audit-logs'
+          : activePath === '/forensic'
+            ? forensicView
+            : activePath === '/reports'
+              ? reports
+              : activePath === '/history'
                 ? historyView
-                : employeesView;
+                : activePath === '/audit-logs'
+                  ? historyView
+                  : employeesView;
 
-  return <Layout user={user} onLogout={onLogout} activePath={activePath} onNavigate={setActivePath}>{content}</Layout>;
+  const modalTransaction = selectedAnomaly ? transactionById.get(selectedAnomaly.transaction_id) || null : null;
+
+  return (
+    <>
+      <Layout user={user} onLogout={onLogout} activePath={activePath} onNavigate={setActivePath}>{content}</Layout>
+      {selectedAnomaly && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 px-4 py-8 backdrop-blur-sm"
+          onClick={() => setSelectedAnomaly(null)}
+        >
+          <div
+            className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-[32px] bg-white p-7 shadow-[0_30px_80px_rgba(15,23,42,0.35)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-[0.24em] text-red-600">Flag Explanation</p>
+                <h2 className="mt-2 text-3xl font-black tracking-[-0.04em] text-slate-950">{formatAnomalyType(selectedAnomaly.anomaly_type)} Detection</h2>
+              </div>
+              <button type="button" onClick={() => setSelectedAnomaly(null)} className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-100 text-slate-500 transition hover:bg-slate-200" aria-label="Close explanation">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="mt-6 rounded-[26px] border border-slate-200 bg-slate-50 p-5">
+              <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Flagged Transaction</p>
+              <p className="font-black text-slate-950">{modalTransaction?.description || 'Flagged transaction'}</p>
+              <p className="mt-2 text-sm font-semibold text-slate-500">
+                {modalTransaction
+                  ? `${formatDate(modalTransaction.transaction_date)} | TK ${modalTransaction.amount.toLocaleString()} | ${modalTransaction.group_name || modalTransaction.chart_acc_head || 'Ungrouped'}`
+                  : selectedAnomaly.transaction_id}
+              </p>
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <TransactionDetail label="Transaction ID" value={selectedAnomaly.transaction_id} />
+                <TransactionDetail label="Voucher" value={modalTransaction?.invoice_id || 'N/A'} />
+                <TransactionDetail label="Reference" value={modalTransaction?.po_number || 'N/A'} />
+                <TransactionDetail label="Account Head" value={modalTransaction?.chart_acc_head || modalTransaction?.cleaned_chart_acc_head || 'N/A'} />
+              </div>
+            </div>
+
+            <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <DataPill label="Law" value={formatAnomalyType(selectedAnomaly.anomaly_type)} />
+              <DataPill label="Score" value={selectedAnomaly.score.toFixed(4)} />
+              <DataPill label="Threshold" value={selectedAnomaly.threshold.toFixed(4)} />
+              <DataPill label="Status" value={selectedAnomaly.is_resolved ? 'Resolved' : 'Open'} />
+            </div>
+
+            <div className="mt-5 rounded-[26px] border border-red-100 bg-red-50 p-5">
+              <p className="text-[11px] font-black uppercase tracking-[0.22em] text-red-700">Why it was flagged</p>
+              <p className="mt-3 text-sm font-semibold leading-6 text-slate-700">
+                {buildAnomalyExplanation(selectedAnomaly)}
+              </p>
+            </div>
+
+            <div className="mt-5 rounded-[26px] border border-slate-200 bg-white p-5">
+              <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Evidence Snapshot</p>
+              <div className="mt-3 space-y-2">
+                {Object.entries(selectedAnomaly.evidence_snapshot || {}).map(([key, value]) => (
+                  <div key={key} className="flex items-start justify-between gap-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm">
+                    <span className="font-black uppercase tracking-[0.12em] text-slate-400">{key.replaceAll('_', ' ')}</span>
+                    <span className="text-right font-semibold text-slate-700">{formatEvidenceValue(value)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+              <button type="button" onClick={() => setSelectedAnomaly(null)} className="rounded-2xl border border-slate-200 px-5 py-3 font-black text-slate-600 transition hover:bg-slate-50">
+                Close
+              </button>
+              {!selectedAnomaly.is_resolved && (
+                <button type="button" onClick={() => handleUndoAnomaly(selectedAnomaly.anomaly_id)} className="rounded-2xl bg-slate-950 px-5 py-3 font-black text-white transition hover:bg-slate-800">
+                  Undo Flag
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
 };
 
 const HeroHeader = ({ eyebrow, title, description, actionLabel }: { eyebrow: string; title: string; description: string; actionLabel: string }) => (
@@ -793,8 +1129,62 @@ const DataPill = ({ label, value }: { label: string; value: string | number }) =
   </div>
 );
 
+const TransactionDetail = ({ label, value }: { label: string; value: string }) => (
+  <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+    <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{label}</p>
+    <p className="mt-1 break-words text-sm font-black text-slate-800">{value}</p>
+  </div>
+);
+
+const ForensicLawCard = ({ title, value, description }: { title: string; value: number; description: string }) => (
+  <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+    <div className="flex items-start justify-between gap-4">
+      <div>
+        <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">{title}</p>
+        <p className="mt-2 text-sm font-semibold leading-6 text-slate-500">{description}</p>
+      </div>
+      <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-xl font-black text-red-600 shadow-sm">
+        {value}
+      </span>
+    </div>
+  </div>
+);
+
+const formatAnomalyType = (value: string) => {
+  const normalized = value.toLowerCase();
+  if (normalized.includes('zscore')) return 'Z-score';
+  if (normalized.includes('rsf')) return 'RSF';
+  if (normalized.includes('benford')) return 'Benford';
+  return value.replaceAll('_', ' ');
+};
+
+const formatEvidenceValue = (value: unknown) => {
+  if (typeof value === 'number') return Number.isInteger(value) ? String(value) : value.toFixed(4);
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return 'N/A';
+  return JSON.stringify(value);
+};
+
+const buildAnomalyExplanation = (anomaly: Anomaly) => {
+  const evidence = anomaly.evidence_snapshot || {};
+  const type = anomaly.anomaly_type.toLowerCase();
+  if (type.includes('benford')) {
+    return `Benford's Law flagged this transaction because first digit ${formatEvidenceValue(evidence.digit)} appeared with observed frequency ${formatEvidenceValue(evidence.observed_frequency)}, while the expected frequency is ${formatEvidenceValue(evidence.expected_frequency)}. The deviation crossed the configured threshold of ${anomaly.threshold.toFixed(4)}.`;
+  }
+  if (type.includes('zscore')) {
+    return `Z-score flagged this transaction because its amount was unusually far from the average in group "${formatEvidenceValue(evidence.group_name)}". The anomaly score is ${anomaly.score.toFixed(4)}, which is above the threshold of ${anomaly.threshold.toFixed(4)}.`;
+  }
+  if (type.includes('rsf')) {
+    return `Relative Size Factor flagged this transaction because its amount was ${anomaly.score.toFixed(4)} times the median amount in group "${formatEvidenceValue(evidence.group_name)}". That is above the configured threshold of ${anomaly.threshold.toFixed(4)}.`;
+  }
+  return `This transaction was flagged by ${formatAnomalyType(anomaly.anomaly_type)} with score ${anomaly.score.toFixed(4)}, above threshold ${anomaly.threshold.toFixed(4)}.`;
+};
+
+const formatDate = (value: string) =>
+  new Date(value).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
+
 const formatMonthLabel = (value: string) =>
-  new Date(`${value}T00:00:00`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  new Date(`${value.length === 7 ? `${value}-01` : value}T00:00:00`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
 
 const formatShortMonth = (value: string) =>
   value.length === 7

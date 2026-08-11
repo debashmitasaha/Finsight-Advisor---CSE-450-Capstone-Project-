@@ -118,6 +118,15 @@ export interface UploadBatchSummary {
   last_transaction_date: string | null;
 }
 
+export interface ForensicRunResponse {
+  success: boolean;
+  message?: string;
+  benford_anomalies?: number;
+  zscore_anomalies?: number;
+  rsf_anomalies?: number;
+  total_anomalies: number;
+}
+
 export interface Anomaly {
   anomaly_id: string;
   transaction_id: string;

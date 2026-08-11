@@ -7,11 +7,11 @@ import {
   ForecastContextResponse,
   ForecastRunResponse,
   ForecastSourceMode,
+  ForensicRunResponse,
   Transaction,
   UploadBatchSummary,
   UserAccount,
 } from '../types';
-
 const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8000';
 
 async function request<T>(path: string, options: RequestInit = {}, authenticated = true): Promise<T> {
@@ -85,6 +85,7 @@ export const api = {
     }),
   }),
   forecasts: (deptId: string) => request<Forecast[]>(`/budget/dept/${deptId}/forecasts`),
+
   uploadBatches: (deptId: string) => request<UploadBatchSummary[]>(`/budget/dept/${deptId}/upload-batches`),
   forecastContext: (
     deptId: string,
@@ -104,9 +105,10 @@ export const api = {
     if (options.dateTo) params.set('date_to', options.dateTo);
     return request<ForecastContextResponse>(`/budget/dept/${deptId}/forecast-context?${params.toString()}`);
   },
-  runForensic: (deptId: string, month: number, year: number) => request('/forensic/analyze', {
+  runForensic: (deptId: string, month: number, year: number) => request<ForensicRunResponse>('/forensic/analyze', {
     method: 'POST',
     body: JSON.stringify({ dept_id: deptId, month, year }),
   }),
   anomalies: (deptId: string) => request<Anomaly[]>(`/forensic/dept/${deptId}/anomalies`),
+  resolveAnomaly: (anomalyId: string) => request<{ success: boolean; anomaly_id: string }>(`/forensic/anomaly/${anomalyId}/resolve`, { method: 'PATCH' }),
 };

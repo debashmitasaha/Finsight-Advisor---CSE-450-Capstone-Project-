@@ -75,7 +75,7 @@ def zscore_analysis(transactions: list[dict]) -> dict:
     """
     Run Z-Score anomaly detection on transactions.
     Groups by (month, group) cohort and flags transactions
-    where |z-score| > 2.5 and cohort size >= 5.
+    where |z-score| > 3.0 and cohort size >= 5.
     """
     df = pd.DataFrame(transactions)
     df['transaction_date'] = pd.to_datetime(df['transaction_date'])
@@ -95,7 +95,7 @@ def zscore_analysis(transactions: list[dict]) -> dict:
 
         for _, row in cohort.iterrows():
             z = (row['amount'] - mean) / std
-            if abs(z) > 2.5:
+            if abs(z) > 3.0:
                 flagged_transactions.append({
                     "transaction_date": str(row['transaction_date']),
                     "amount": row['amount'],
@@ -115,7 +115,7 @@ def rsf_analysis(transactions: list[dict]) -> dict:
     """
     Run Relative Size Factor analysis on transactions.
     RSF = transaction amount / median amount in (month, group) cohort.
-    Flags transactions where RSF > 3.0.
+    Flags transactions where RSF > 10.0.
     """
     df = pd.DataFrame(transactions)
     df['transaction_date'] = pd.to_datetime(df['transaction_date'])
@@ -134,7 +134,7 @@ def rsf_analysis(transactions: list[dict]) -> dict:
 
         for _, row in cohort.iterrows():
             rsf = row['amount'] / median
-            if rsf > 3.0:
+            if rsf > 10.0:
                 flagged_transactions.append({
                     "transaction_date": str(row['transaction_date']),
                     "amount": row['amount'],
