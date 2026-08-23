@@ -65,6 +65,7 @@ create table if not exists public.transaction (
   transaction_id text primary key default gen_random_uuid()::text,
   transaction_date timestamptz not null default now(),
   amount numeric(15, 2) not null,
+  transaction_type text not null default 'debit',
   description text,
   category text default 'uncategorized',
   department_id text references public.department(department_id) on delete set null,

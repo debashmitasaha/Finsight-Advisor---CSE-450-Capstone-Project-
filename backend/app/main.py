@@ -11,6 +11,7 @@ from app.budget.router import router as budget_router
 from app.categorization.router import router as categorization_router
 from app.database import init_db
 from app.forensic.router import router as forensic_router
+from app.forensic_engine.router import router as forensic_engine_router
 from app.grouping.router import router as grouping_router
 from app.seed import seed_demo_data
 from app.transaction.router import router as transaction_router
@@ -49,6 +50,7 @@ app.include_router(grouping_router)
 app.include_router(categorization_router)
 app.include_router(budget_router)
 app.include_router(forensic_router)
+app.include_router(forensic_engine_router)
 app.include_router(admin_router)
 
 

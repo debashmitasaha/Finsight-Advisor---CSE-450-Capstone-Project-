@@ -18,7 +18,7 @@ from app.services.common import (
     ensure_dataframe_columns,
     normalize_bool,
 )
-from app.services.dataframe import read_uploaded_file
+from app.services.dataframe import read_uploaded_file, resolve_amount_and_type
 
 router = APIRouter(prefix="/transactions", tags=["Transactions"])
 
@@ -28,6 +28,7 @@ class TransactionResponse(BaseModel):
     department_id: Optional[str]
     transaction_date: str
     amount: float
+    transaction_type: str
     description: Optional[str]
     category: Optional[str]
     chart_acc_head: Optional[str]
@@ -110,6 +111,7 @@ def serialize_transaction(txn: Transaction) -> TransactionResponse:
         department_id=txn.department_id,
         transaction_date=txn.transaction_date.isoformat(),
         amount=float(txn.amount),
+        transaction_type=getattr(txn, "transaction_type", None) or "debit",
         description=txn.description,
         category=txn.category,
         chart_acc_head=txn.chart_acc_head,
@@ -145,6 +147,7 @@ async def upload_transactions(
         contents = await file.read()
         dataframe = read_uploaded_file(file.filename or "upload.csv", contents)
         dataframe = normalize_upload_columns(dataframe)
+        dataframe = resolve_amount_and_type(dataframe)
         ensure_dataframe_columns(dataframe, REQUIRED_COLUMNS)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -170,6 +173,7 @@ async def upload_transactions(
         try:
             transaction_date = pd.to_datetime(row["transaction_date"], utc=True).to_pydatetime()
             amount = float(row["amount"])
+            transaction_type = str(row.get("transaction_type") or "debit").strip().lower()
             description = optional_text(row, "description")
             chart_acc_head = optional_text(row, "chart_acc_head")
             cleaned_chart = clean_chart_account_head(chart_acc_head)
@@ -194,6 +198,7 @@ async def upload_transactions(
                 department_id=dept_id,
                 transaction_date=transaction_date,
                 amount=amount,
+                transaction_type=transaction_type if transaction_type in {"debit", "credit"} else "debit",
                 description=description,
                 category="uncategorized",
                 chart_acc_head=chart_acc_head,

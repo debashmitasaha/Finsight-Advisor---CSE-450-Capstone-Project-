@@ -28,6 +28,7 @@ import {
   YAxis,
 } from 'recharts';
 import Layout from '../components/Layout';
+import ForensicIntelligence from './ForensicIntelligence';
 import { api } from '../lib/api';
 import {
   Anomaly,
@@ -938,6 +939,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
           ? deptStatus
           : activePath === '/forensic'
             ? forensicView
+          : activePath === '/forensic-engine'
+            ? <ForensicIntelligence department={selectedDepartment} transactions={transactions} />
             : activePath === '/reports'
               ? reports
               : activePath === '/history'

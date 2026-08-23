@@ -1,5 +1,10 @@
 import {
   AdminOverview,
+  BenchmarkResponse,
+  EngineAnalyzeResponse,
+  EngineCapabilities,
+  EngineCaseReport,
+  EngineFinding,
   Anomaly,
   Company,
   Department,
@@ -111,4 +116,31 @@ export const api = {
   }),
   anomalies: (deptId: string) => request<Anomaly[]>(`/forensic/dept/${deptId}/anomalies`),
   resolveAnomaly: (anomalyId: string) => request<{ success: boolean; anomaly_id: string }>(`/forensic/anomaly/${anomalyId}/resolve`, { method: 'PATCH' }),
+
+  // --- Forensic Intelligence Engine ---
+  engineCapabilities: (deptId?: string) =>
+    request<EngineCapabilities>(`/forensic-engine/capabilities${deptId ? `?dept_id=${encodeURIComponent(deptId)}` : ''}`),
+  engineAnalyze: (deptId: string, minReportScore = 60) =>
+    request<EngineAnalyzeResponse>('/forensic-engine/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ dept_id: deptId, min_report_score: minReportScore }),
+    }),
+  engineFindings: (deptId: string, options: { band?: string; minScore?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (options.band) params.set('band', options.band);
+    if (options.minScore) params.set('min_score', String(options.minScore));
+    const query = params.toString();
+    return request<EngineFinding[]>(`/forensic-engine/dept/${deptId}/findings${query ? `?${query}` : ''}`);
+  },
+  engineCaseReport: (findingId: string) => request<EngineCaseReport>(`/forensic-engine/finding/${findingId}/case-report`),
+  engineResolve: (findingId: string, note?: string) =>
+    request<{ success: boolean; finding_id: string }>(`/forensic-engine/finding/${findingId}/resolve`, {
+      method: 'PATCH',
+      body: JSON.stringify({ note: note ?? null }),
+    }),
+  engineBenchmark: (deptId: string, threshold = 60) =>
+    request<BenchmarkResponse>('/forensic-engine/benchmark', {
+      method: 'POST',
+      body: JSON.stringify({ dept_id: deptId, threshold }),
+    }),
 };

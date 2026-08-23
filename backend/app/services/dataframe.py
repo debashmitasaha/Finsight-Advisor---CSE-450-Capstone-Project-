@@ -39,6 +39,57 @@ def normalize_upload_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return normalized
 
 
+DEBIT_ALIASES = ("debit", "debit_amount", "dr", "withdrawal")
+CREDIT_ALIASES = ("credit", "credit_amount", "cr", "deposit")
+
+
+def resolve_amount_and_type(df: pd.DataFrame) -> pd.DataFrame:
+    """Turn a two-column debit/credit ledger into a signed-by-type single amount.
+
+    A double-entry export carries money-out in Debit and money-in in Credit, with the
+    unused side left at zero. Mapping only Debit to `amount` silently discards every
+    credit row — it lands as amount = 0, invisible to forensics and forecasting alike,
+    which is how half a ledger can disappear without a single error being raised.
+
+    Each row keeps its own side in `transaction_type`, which is what
+    `forecasting._pick_spending_side()` has always expected to read.
+    """
+    resolved = df.copy()
+    lower = {str(column).strip().lower(): column for column in resolved.columns}
+
+    debit_column = next((lower[name] for name in DEBIT_ALIASES if name in lower), None)
+    credit_column = next((lower[name] for name in CREDIT_ALIASES if name in lower), None)
+
+    # `normalize_upload_dataframe` renames a Debit column to `amount` before this runs, so
+    # by the time we get here the debit side usually survives only under that name. Treat
+    # an existing `amount` as the debit side rather than as "no debit column", which would
+    # otherwise zero out every genuine payment.
+    if debit_column is None and "amount" in lower:
+        debit_column = lower["amount"]
+
+    if debit_column is None and credit_column is None:
+        # Single-amount ledger: nothing to reconcile, but every row still needs a side.
+        if "transaction_type" not in resolved.columns:
+            resolved["transaction_type"] = "debit"
+        return resolved
+
+    debit = (
+        pd.to_numeric(resolved[debit_column], errors="coerce").fillna(0.0)
+        if debit_column is not None
+        else pd.Series(0.0, index=resolved.index)
+    )
+    credit = (
+        pd.to_numeric(resolved[credit_column], errors="coerce").fillna(0.0)
+        if credit_column is not None
+        else pd.Series(0.0, index=resolved.index)
+    )
+
+    is_credit = (debit <= 0) & (credit > 0)
+    resolved["amount"] = debit.where(~is_credit, credit).abs()
+    resolved["transaction_type"] = pd.Series("debit", index=resolved.index).where(~is_credit, "credit")
+    return resolved
+
+
 def read_uploaded_file(filename: str, content: bytes) -> pd.DataFrame:
     lower = filename.lower()
     if lower.endswith(".csv"):

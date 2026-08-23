@@ -8,6 +8,7 @@ import {
   PieChart,
   Settings,
   ShieldAlert,
+  Radar,
   Users,
 } from 'lucide-react';
 import { UserRole } from './types';
@@ -30,6 +31,7 @@ export const SIDEBAR_ITEMS = {
     { name: 'Dept Control', icon: Settings, path: '/dept-control' },
     { name: 'Dept Status', icon: PieChart, path: '/dept-status' },
     { name: 'Forensic Lab', icon: ShieldAlert, path: '/forensic' },
+    { name: 'Intelligence Engine', icon: Radar, path: '/forensic-engine' },
     { name: 'Reports', icon: FileSearch, path: '/reports' },
     { name: 'History', icon: Clock3, path: '/history' },
     { name: 'Audit Logs', icon: Activity, path: '/audit-logs' },

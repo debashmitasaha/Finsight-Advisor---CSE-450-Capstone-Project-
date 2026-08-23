@@ -45,6 +45,7 @@ export interface Transaction {
   department_id: string | null;
   transaction_date: string;
   amount: number;
+  transaction_type: 'debit' | 'credit';
   description: string | null;
   category: TransactionCategory | null;
   chart_acc_head: string | null;
@@ -146,4 +147,150 @@ export interface AdminOverview {
   transactions: number;
   uploads: number;
   department_summaries: Department[];
+}
+
+// --- Forensic Intelligence Engine (multi-view) ---
+
+export type RiskBand = 'critical' | 'high' | 'medium' | 'low';
+export type ForensicView = 'rule' | 'behavioral' | 'temporal' | 'relational';
+
+export interface EvidenceItem {
+  view: ForensicView;
+  code: string;
+  strength: number;
+  message: string;
+  detail: Record<string, unknown>;
+}
+
+export interface EngineFinding {
+  finding_id?: string;
+  transaction_id: string;
+  risk_score: number;
+  band: RiskBand;
+  corroboration: number;
+  views_triggered: ForensicView[];
+  view_scores: Partial<Record<ForensicView, number>>;
+  evidence: EvidenceItem[];
+  is_resolved?: boolean;
+  created_at?: string;
+}
+
+export interface EngineDataQuality {
+  grouping_ratio: number;
+  zero_amount_share: number;
+  ledger_span_days: number;
+  distinct_vouchers: number;
+  warnings: string[];
+}
+
+export interface EngineSummary {
+  total_scored: number;
+  bands: Record<RiskBand, number>;
+  by_view: Partial<Record<ForensicView, number>>;
+  top_codes: Record<string, number>;
+}
+
+export interface EngineDiagnostics {
+  rows_analysed: number;
+  positive_rows: number;
+  zero_amount_rows: number;
+  date_range: { from: string; to: string };
+  entity_kinds_active: string[];
+  entity_counts: Record<string, number>;
+  data_quality: EngineDataQuality;
+  views: Record<string, { status: string; signals?: number; error?: string; [key: string]: unknown }>;
+  signals_total: number;
+  view_credibility: Record<ForensicView, number>;
+}
+
+export interface EngineAnalyzeResponse {
+  success: boolean;
+  run_id: string | null;
+  summary: EngineSummary;
+  diagnostics: EngineDiagnostics;
+  reported: number;
+  min_report_score: number;
+  findings: EngineFinding[];
+  message?: string;
+}
+
+export interface EngineCapabilities {
+  views: Record<ForensicView, string>;
+  injection_scenarios: string[];
+  unsupported_scenarios: Record<string, string>;
+  ledger?: { rows: number; entity_kinds_active?: string[]; data_quality?: EngineDataQuality };
+}
+
+export interface ScenarioResult {
+  planted: number;
+  detected: number;
+  recall: number;
+  best_rank: number | null;
+  best_score: number;
+  description: string;
+  triggered_views: ForensicView[];
+}
+
+export interface BenchmarkMetrics {
+  threshold: number;
+  total_rows: number;
+  planted_rows: number;
+  flagged_rows: number;
+  true_positives: number;
+  false_positives: number;
+  false_negatives: number;
+  precision: number;
+  recall: number;
+  f1: number;
+  false_positive_rate: number;
+  top_k_precision: Record<string, number>;
+  mean_rank_of_planted: number | null;
+  median_rank_of_planted: number | null;
+  per_scenario: Record<string, ScenarioResult>;
+}
+
+export interface ThresholdPoint {
+  threshold: number;
+  precision: number;
+  recall: number;
+  f1: number;
+  false_positive_rate: number;
+  flagged: number;
+}
+
+export interface BenchmarkResponse {
+  injection: { scenarios_planted: number; rows_planted: number; by_scenario: Record<string, number> };
+  planted_cases: { scenario: string; rows: number; description: string; detail: Record<string, unknown> }[];
+  metrics: BenchmarkMetrics;
+  threshold_curve: ThresholdPoint[];
+  clean_ledger: { rows: number; scored: number; bands: Record<RiskBand, number> };
+  injected_ledger: { rows: number; scored: number; bands: Record<RiskBand, number> };
+  scenarios_available: string[];
+  scenarios_unsupported: Record<string, string>;
+  data_quality: EngineDataQuality;
+  seed: number;
+}
+
+export interface EngineCaseReport {
+  finding_id: string;
+  risk_score: number;
+  band: RiskBand;
+  headline: string;
+  transaction: {
+    transaction_id: string;
+    transaction_date: string;
+    amount: number;
+    description: string | null;
+    chart_acc_head: string | null;
+    group_name: string | null;
+    invoice_id: string | null;
+    po_number: string | null;
+    payment_method: string | null;
+    approval_status: string;
+  } | null;
+  view_scores: Partial<Record<ForensicView, number>>;
+  why_flagged: string[];
+  evidence: EvidenceItem[];
+  is_resolved: boolean;
+  resolution_note: string | null;
 }
