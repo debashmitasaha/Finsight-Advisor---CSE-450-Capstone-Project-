@@ -1,18 +1,18 @@
 create extension if not exists "pgcrypto";
 
 create table if not exists public.department (
-  department_id text primary key default gen_random_uuid()::text,
+  department_id uuid primary key default gen_random_uuid(),
   department_name text not null,
   annual_budget numeric(15, 2),
   is_active boolean not null default true,
-  company_id text,
+  company_id uuid,
   created_at timestamptz not null default now()
 );
 
 create table if not exists public.company (
-  company_id text primary key default gen_random_uuid()::text,
+  company_id uuid primary key default gen_random_uuid(),
   company_name text not null,
-  dept_id text references public.department(department_id) on delete set null
+  dept_id uuid references public.department(department_id) on delete set null
 );
 
 alter table public.department
@@ -20,9 +20,9 @@ alter table public.department
   foreign key (company_id) references public.company(company_id) on delete set null;
 
 create table if not exists public.users (
-  user_id text primary key default gen_random_uuid()::text,
+  user_id uuid primary key default gen_random_uuid(),
   username text not null unique,
-  company_id text references public.company(company_id) on delete set null,
+  company_id uuid references public.company(company_id) on delete set null,
   email text not null unique,
   password_hash text not null,
   is_admin boolean not null default false,
@@ -33,14 +33,14 @@ create table if not exists public.users (
 );
 
 create table if not exists public.user_role (
-  dept_id text not null references public.department(department_id) on delete cascade,
-  user_id text not null references public.users(user_id) on delete cascade,
+  dept_id uuid not null references public.department(department_id) on delete cascade,
+  user_id uuid not null references public.users(user_id) on delete cascade,
   permissions text[] not null default '{}',
   primary key (dept_id, user_id)
 );
 
 create table if not exists public."group" (
-  dept_id text not null references public.department(department_id) on delete cascade,
+  dept_id uuid not null references public.department(department_id) on delete cascade,
   chart_acc_head_name text not null,
   group_no numeric(10, 2),
   group_name text,
@@ -52,23 +52,23 @@ create table if not exists public."group" (
 );
 
 create table if not exists public.upload_batch (
-  upload_batch_id text primary key default gen_random_uuid()::text,
-  department_id text references public.department(department_id) on delete set null,
+  upload_batch_id uuid primary key default gen_random_uuid(),
+  department_id uuid references public.department(department_id) on delete set null,
   source_file_name text not null,
-  uploaded_by text references public.users(user_id) on delete set null,
+  uploaded_by uuid references public.users(user_id) on delete set null,
   uploaded_at timestamptz not null default now(),
   row_count integer not null default 0,
   status text not null default 'processing'
 );
 
 create table if not exists public.transaction (
-  transaction_id text primary key default gen_random_uuid()::text,
+  transaction_id uuid primary key default gen_random_uuid(),
   transaction_date timestamptz not null default now(),
   amount numeric(15, 2) not null,
   transaction_type text not null default 'debit',
   description text,
   category text default 'uncategorized',
-  department_id text references public.department(department_id) on delete set null,
+  department_id uuid references public.department(department_id) on delete set null,
   payment_method text,
   invoice_id text,
   voucher_number text,
@@ -86,55 +86,55 @@ create table if not exists public.transaction (
   is_flagged boolean not null default false,
   flagged_reason text,
   source_file_name text,
-  upload_batch_id text references public.upload_batch(upload_batch_id) on delete set null,
+  upload_batch_id uuid references public.upload_batch(upload_batch_id) on delete set null,
   dedupe_hash text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 create table if not exists public.notification (
-  notification_id text primary key default gen_random_uuid()::text,
-  department_id text references public.department(department_id) on delete set null,
+  notification_id uuid primary key default gen_random_uuid(),
+  department_id uuid references public.department(department_id) on delete set null,
   type text not null,
   message text not null,
   created_at timestamptz not null default now()
 );
 
 create table if not exists public.notification_seen (
-  notification_id text not null references public.notification(notification_id) on delete cascade,
-  user_id text not null references public.users(user_id) on delete cascade,
+  notification_id uuid not null references public.notification(notification_id) on delete cascade,
+  user_id uuid not null references public.users(user_id) on delete cascade,
   is_read boolean not null default false,
   read_at timestamptz,
   primary key (notification_id, user_id)
 );
 
 create table if not exists public.access_log (
-  log_id text primary key default gen_random_uuid()::text,
-  user_id text references public.users(user_id) on delete set null,
-  dept_id text references public.department(department_id) on delete set null,
-  transaction_id text references public.transaction(transaction_id) on delete set null,
+  log_id uuid primary key default gen_random_uuid(),
+  user_id uuid references public.users(user_id) on delete set null,
+  dept_id uuid references public.department(department_id) on delete set null,
+  transaction_id uuid references public.transaction(transaction_id) on delete set null,
   action text not null,
   access_timestamp timestamptz not null default now()
 );
 
 create table if not exists public.case_transaction (
-  ct_id text primary key default gen_random_uuid()::text,
-  transaction_id text not null references public.transaction(transaction_id) on delete cascade,
+  ct_id uuid primary key default gen_random_uuid(),
+  transaction_id uuid not null references public.transaction(transaction_id) on delete cascade,
   resolved boolean not null default false,
   resolved_at timestamptz
 );
 
 create table if not exists public.case_assignment (
-  assignment_id text primary key default gen_random_uuid()::text,
-  dept_id text references public.department(department_id) on delete set null,
+  assignment_id uuid primary key default gen_random_uuid(),
+  dept_id uuid references public.department(department_id) on delete set null,
   case_name text not null,
   resolved boolean not null default false,
   resolved_at timestamptz
 );
 
 create table if not exists public.budget_forecast (
-  forecast_id text primary key default gen_random_uuid()::text,
-  department_id text references public.department(department_id) on delete cascade,
+  forecast_id uuid primary key default gen_random_uuid(),
+  department_id uuid references public.department(department_id) on delete cascade,
   forecast_period_start date not null,
   forecast_period_end date not null,
   predicted_amount numeric(15, 2) not null,
@@ -146,9 +146,9 @@ create table if not exists public.budget_forecast (
 );
 
 create table if not exists public.anomaly (
-  anomaly_id text primary key default gen_random_uuid()::text,
-  transaction_id text not null references public.transaction(transaction_id) on delete cascade,
-  department_id text references public.department(department_id) on delete set null,
+  anomaly_id uuid primary key default gen_random_uuid(),
+  transaction_id uuid not null references public.transaction(transaction_id) on delete cascade,
+  department_id uuid references public.department(department_id) on delete set null,
   anomaly_type text not null,
   score numeric(10, 4) not null,
   threshold numeric(10, 4),
@@ -156,6 +156,33 @@ create table if not exists public.anomaly (
   is_resolved boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
+);
+
+create table if not exists public.forensic_run (
+  run_id uuid primary key default gen_random_uuid(),
+  department_id uuid references public.department(department_id) on delete set null,
+  rows_analysed integer not null default 0,
+  findings_stored integer not null default 0,
+  min_report_score numeric(6, 2) not null default 65,
+  diagnostics jsonb not null default '{}',
+  summary jsonb not null default '{}',
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.forensic_finding (
+  finding_id uuid primary key default gen_random_uuid(),
+  run_id uuid not null,
+  transaction_id uuid not null references public.transaction(transaction_id) on delete cascade,
+  department_id uuid references public.department(department_id) on delete set null,
+  risk_score numeric(6, 2) not null,
+  band text not null,
+  corroboration integer not null default 0,
+  views_triggered jsonb not null default '[]',
+  view_scores jsonb not null default '{}',
+  evidence jsonb not null default '[]',
+  is_resolved boolean not null default false,
+  resolution_note text,
+  created_at timestamptz not null default now()
 );
 
 create index if not exists idx_user_company_id on public.users(company_id);
@@ -172,6 +199,10 @@ create index if not exists idx_case_transaction_transaction_id on public.case_tr
 create index if not exists idx_case_assignment_dept_id on public.case_assignment(dept_id);
 create index if not exists idx_budget_forecast_department_id on public.budget_forecast(department_id);
 create index if not exists idx_anomaly_department_id on public.anomaly(department_id);
+create index if not exists idx_forensic_run_dept on public.forensic_run(department_id);
+create index if not exists idx_forensic_finding_dept on public.forensic_finding(department_id);
+create index if not exists idx_forensic_finding_run on public.forensic_finding(run_id);
+create index if not exists idx_forensic_finding_txn on public.forensic_finding(transaction_id);
 
 create or replace function public.handle_updated_at()
 returns trigger language plpgsql as $$

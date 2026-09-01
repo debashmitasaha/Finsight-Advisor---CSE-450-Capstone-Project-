@@ -6,6 +6,7 @@ import uuid
 from sqlalchemy import (
     JSON,
     Boolean,
+    CHAR,
     Date,
     DateTime,
     ForeignKey,
@@ -18,7 +19,9 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 
 
 class Base(DeclarativeBase):
@@ -29,10 +32,30 @@ def new_id() -> str:
     return str(uuid.uuid4())
 
 
+class UUIDString(TypeDecorator):
+    impl = CHAR
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(PostgresUUID(as_uuid=False))
+        return dialect.type_descriptor(String(36))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return str(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return str(value)
+
+
 class Department(Base):
     __tablename__ = "department"
 
-    department_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    department_id: Mapped[str] = mapped_column(UUIDString(), primary_key=True, default=new_id)
     department_name: Mapped[str] = mapped_column(Text, nullable=False)
     annual_budget: Mapped[float | None] = mapped_column(Numeric(15, 2), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -52,7 +75,7 @@ class Department(Base):
 class Company(Base):
     __tablename__ = "company"
 
-    company_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    company_id: Mapped[str] = mapped_column(UUIDString(), primary_key=True, default=new_id)
     company_name: Mapped[str] = mapped_column(Text, nullable=False)
     dept_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
 
@@ -66,7 +89,7 @@ class User(Base):
     # Renamed to "users" to be safe across all supported databases.
     __tablename__ = "users"
 
-    user_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(UUIDString(), primary_key=True, default=new_id)
     username: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     company_id: Mapped[str | None] = mapped_column(ForeignKey("company.company_id", ondelete="SET NULL"), nullable=True)
     email: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
@@ -117,7 +140,7 @@ class Group(Base):
 class Transaction(Base):
     __tablename__ = "transaction"
 
-    transaction_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    transaction_id: Mapped[str] = mapped_column(UUIDString(), primary_key=True, default=new_id)
     transaction_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     amount: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
     # Bug 1 fix: transaction_type distinguishes money-out (debit) from money-in (credit).
@@ -159,7 +182,7 @@ class Transaction(Base):
 class Notification(Base):
     __tablename__ = "notification"
 
-    notification_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    notification_id: Mapped[str] = mapped_column(UUIDString(), primary_key=True, default=new_id)
     department_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
@@ -185,7 +208,7 @@ class NotificationSeen(Base):
 class AccessLog(Base):
     __tablename__ = "access_log"
 
-    log_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    log_id: Mapped[str] = mapped_column(UUIDString(), primary_key=True, default=new_id)
     user_id: Mapped[str | None] = mapped_column(ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
     dept_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
     transaction_id: Mapped[str | None] = mapped_column(ForeignKey("transaction.transaction_id", ondelete="SET NULL"), nullable=True)
@@ -199,7 +222,7 @@ class AccessLog(Base):
 class CaseTransaction(Base):
     __tablename__ = "case_transaction"
 
-    ct_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    ct_id: Mapped[str] = mapped_column(UUIDString(), primary_key=True, default=new_id)
     transaction_id: Mapped[str] = mapped_column(ForeignKey("transaction.transaction_id", ondelete="CASCADE"), nullable=False)
     resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -210,7 +233,7 @@ class CaseTransaction(Base):
 class CaseAssignment(Base):
     __tablename__ = "case_assignment"
 
-    assignment_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    assignment_id: Mapped[str] = mapped_column(UUIDString(), primary_key=True, default=new_id)
     dept_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
     case_name: Mapped[str] = mapped_column(Text, nullable=False)
     resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -220,7 +243,7 @@ class CaseAssignment(Base):
 class BudgetForecast(Base):
     __tablename__ = "budget_forecast"
 
-    forecast_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    forecast_id: Mapped[str] = mapped_column(UUIDString(), primary_key=True, default=new_id)
     department_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="CASCADE"), nullable=True)
     forecast_period_start: Mapped[date] = mapped_column(Date, nullable=False)
     forecast_period_end: Mapped[date] = mapped_column(Date, nullable=False)
@@ -237,7 +260,7 @@ class BudgetForecast(Base):
 class UploadBatch(Base):
     __tablename__ = "upload_batch"
 
-    upload_batch_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    upload_batch_id: Mapped[str] = mapped_column(UUIDString(), primary_key=True, default=new_id)
     department_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
     source_file_name: Mapped[str] = mapped_column(Text, nullable=False)
     uploaded_by: Mapped[str | None] = mapped_column(ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
@@ -253,7 +276,7 @@ class UploadBatch(Base):
 class Anomaly(Base):
     __tablename__ = "anomaly"
 
-    anomaly_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    anomaly_id: Mapped[str] = mapped_column(UUIDString(), primary_key=True, default=new_id)
     transaction_id: Mapped[str] = mapped_column(ForeignKey("transaction.transaction_id", ondelete="CASCADE"), nullable=False)
     department_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
     anomaly_type: Mapped[str] = mapped_column(Text, nullable=False)

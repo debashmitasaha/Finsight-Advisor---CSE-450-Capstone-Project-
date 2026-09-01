@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, Numeric, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models import Base, new_id
+from app.models import Base, UUIDString, new_id
 
 
 class ForensicFinding(Base):
@@ -19,8 +19,8 @@ class ForensicFinding(Base):
 
     __tablename__ = "forensic_finding"
 
-    finding_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    run_id: Mapped[str] = mapped_column(String, nullable=False)
+    finding_id: Mapped[str] = mapped_column(UUIDString(), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(UUIDString(), nullable=False)
     transaction_id: Mapped[str] = mapped_column(ForeignKey("transaction.transaction_id", ondelete="CASCADE"), nullable=False)
     department_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
 
@@ -41,7 +41,7 @@ class ForensicRun(Base):
 
     __tablename__ = "forensic_run"
 
-    run_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(UUIDString(), primary_key=True, default=new_id)
     department_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
     rows_analysed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     findings_stored: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
