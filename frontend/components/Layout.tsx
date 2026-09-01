@@ -135,9 +135,9 @@ const Layout: React.FC<LayoutProps> = ({ user, onLogout, children, activePath, o
   };
 
   return (
-    <div className="min-h-screen bg-[linear-gradient(180deg,#f5f9ff_0%,#eef4ff_28%,#f8fafc_100%)] flex overflow-hidden">
+    <div className="h-screen min-h-screen bg-[linear-gradient(180deg,#f5f9ff_0%,#eef4ff_28%,#f8fafc_100%)] overflow-hidden">
       {/* Sidebar */}
-      <aside className={`bg-[#121a2f] text-white w-[252px] fixed inset-y-0 left-0 z-50 transition-transform duration-300 transform ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:relative lg:translate-x-0 shadow-[30px_0_60px_rgba(15,23,42,0.18)]`}>
+      <aside className={`bg-[#121a2f] text-white w-[252px] fixed inset-y-0 left-0 z-50 flex h-screen flex-col transition-transform duration-300 transform ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0 shadow-[30px_0_60px_rgba(15,23,42,0.18)]`}>
         <div className="flex items-center justify-between p-6 border-b border-white/6">
           <div className="flex items-center gap-3">
             <div className="bg-white/5 p-1.5 rounded-2xl border border-white/10 shadow-inner">
@@ -153,7 +153,7 @@ const Layout: React.FC<LayoutProps> = ({ user, onLogout, children, activePath, o
           </button>
         </div>
 
-        <nav className="p-4 space-y-2">
+        <nav className="flex-1 overflow-y-auto p-4 space-y-2">
           {menuItems.map((item) => {
             const isActive = activePath === item.path;
             return (
@@ -173,7 +173,7 @@ const Layout: React.FC<LayoutProps> = ({ user, onLogout, children, activePath, o
           })}
         </nav>
 
-        <div className="absolute bottom-0 w-full p-4 border-t border-white/6">
+        <div className="w-full p-4 border-t border-white/6">
           <button 
             onClick={onLogout}
             className="w-full flex items-center gap-3 px-4 py-3 text-slate-400 hover:text-red-300 hover:bg-red-500/10 rounded-2xl transition-all"
@@ -185,7 +185,7 @@ const Layout: React.FC<LayoutProps> = ({ user, onLogout, children, activePath, o
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-auto">
+      <main className="h-screen min-w-0 overflow-y-auto lg:ml-[252px]">
         {/* Top Bar */}
         <header className="sticky top-0 z-40 border-b border-white/60 bg-white/80 backdrop-blur-xl">
           <div className="h-20 flex items-center justify-between px-6 md:px-8">
