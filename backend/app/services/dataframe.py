@@ -12,8 +12,12 @@ SUPPORTED_EXTENSIONS = {".csv", ".xls", ".xlsx"}
 UPLOAD_COLUMN_ALIASES = {
     "transaction_date": ("transaction_date", "date", "txn_date"),
     "amount": ("amount", "debit", "debit_amount", "transaction_amount"),
+    "credit": ("credit", "credit_amount"),
     "description": ("description", "narration", "details", "remarks"),
     "chart_acc_head": ("chart_acc_head", "chart_of_acc_head", "account_head", "chart_account_head"),
+    "voucher_number": ("voucher_number", "voucher number"),
+    "account_head_group": ("account_head_group", "account head group"),
+    "voucher_type": ("voucher_type", "voucher_type", "voucher type"),
 }
 
 
@@ -115,6 +119,7 @@ def department_transactions_df(db: Session, department_id: str) -> pd.DataFrame:
                 "department_id": txn.department_id,
                 "transaction_date": txn.transaction_date,
                 "amount": float(txn.amount),
+                "transaction_type": txn.transaction_type,
                 "description": txn.description,
                 "category": txn.category,
                 "chart_acc_head": txn.chart_acc_head,
@@ -122,6 +127,9 @@ def department_transactions_df(db: Session, department_id: str) -> pd.DataFrame:
                 "group_no": float(txn.group_no) if txn.group_no is not None else None,
                 "group_name": txn.group_name,
                 "semantic_confidence": float(txn.semantic_confidence) if txn.semantic_confidence is not None else None,
+                "voucher_number": txn.voucher_number,
+                "account_head_group": txn.account_head_group,
+                "voucher_type": txn.voucher_type,
                 "risk_score": float(txn.risk_score or 0),
                 "is_flagged": txn.is_flagged,
             }

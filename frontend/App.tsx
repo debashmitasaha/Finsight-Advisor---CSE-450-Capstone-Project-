@@ -8,6 +8,7 @@ import AdminDashboard from './pages/AdminDashboard';
 import UserDashboard from './pages/UserDashboard';
 import DesignSystem from './pages/DesignSystem';
 import { UserAccount, UserRole } from './types';
+import { api, AUTH_EXPIRED } from './lib/api';
 
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
@@ -18,13 +19,45 @@ const App: React.FC = () => {
   const [viewDesignSystem, setViewDesignSystem] = useState(false);
 
   useEffect(() => {
-    const savedUser = localStorage.getItem('finsight_user');
-    if (savedUser) {
-      setCurrentUser(JSON.parse(savedUser));
-      setShowLanding(false);
+    const bootstrapSession = async () => {
+      const savedUser = localStorage.getItem('finsight_user');
+      const savedToken = localStorage.getItem('finsight_token');
+
+      if (!savedUser || !savedToken) {
+        localStorage.removeItem('finsight_user');
+        localStorage.removeItem('finsight_token');
+        setIsInitialized(true);
+        return;
+      }
+
+      try {
+        const me = await api.me();
+        localStorage.setItem('finsight_user', JSON.stringify(me.user));
+        setCurrentUser(me.user);
+        setShowLanding(false);
+        setShowSplash(false);
+      } catch {
+        localStorage.removeItem('finsight_user');
+        localStorage.removeItem('finsight_token');
+        setCurrentUser(null);
+      } finally {
+        setIsInitialized(true);
+      }
+    };
+
+    bootstrapSession();
+  }, []);
+
+  useEffect(() => {
+    const handleAuthExpired = () => {
+      setCurrentUser(null);
+      setShowLanding(true);
+      setShowPresentation(false);
       setShowSplash(false);
-    }
-    setIsInitialized(true);
+    };
+
+    window.addEventListener(AUTH_EXPIRED, handleAuthExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED, handleAuthExpired);
   }, []);
 
   const handleLogin = (user: UserAccount) => {

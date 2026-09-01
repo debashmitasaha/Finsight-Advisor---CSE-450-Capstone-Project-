@@ -20,6 +20,7 @@ export interface UserAccount {
   company_id: string | null;
   is_admin: boolean;
   is_active: boolean;
+  last_login?: string | null;
   account_type: UserRole;
   departments: DepartmentRole[];
 }
@@ -29,6 +30,8 @@ export interface Company {
   company_name: string;
   department_count?: number;
   user_count?: number;
+  is_active?: boolean;
+  purchase_date?: string | null;
 }
 
 export interface Department {
@@ -38,6 +41,8 @@ export interface Department {
   is_active?: boolean;
   company_id?: string | null;
   transaction_count?: number;
+  used_budget_current_year?: number;
+  annual_budget_utilization_pct?: number;
 }
 
 export interface Transaction {
@@ -55,6 +60,9 @@ export interface Transaction {
   semantic_confidence: number | null;
   payment_method: string | null;
   invoice_id: string | null;
+  voucher_number?: string | null;
+  account_head_group?: string | null;
+  voucher_type?: string | null;
   po_number: string | null;
   approval_status: string;
   has_receipt: boolean;

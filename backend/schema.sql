@@ -19,7 +19,7 @@ alter table public.department
   add constraint department_company_id_fkey
   foreign key (company_id) references public.company(company_id) on delete set null;
 
-create table if not exists public."user" (
+create table if not exists public.users (
   user_id text primary key default gen_random_uuid()::text,
   username text not null unique,
   company_id text references public.company(company_id) on delete set null,
@@ -34,7 +34,7 @@ create table if not exists public."user" (
 
 create table if not exists public.user_role (
   dept_id text not null references public.department(department_id) on delete cascade,
-  user_id text not null references public."user"(user_id) on delete cascade,
+  user_id text not null references public.users(user_id) on delete cascade,
   permissions text[] not null default '{}',
   primary key (dept_id, user_id)
 );
@@ -55,7 +55,7 @@ create table if not exists public.upload_batch (
   upload_batch_id text primary key default gen_random_uuid()::text,
   department_id text references public.department(department_id) on delete set null,
   source_file_name text not null,
-  uploaded_by text references public."user"(user_id) on delete set null,
+  uploaded_by text references public.users(user_id) on delete set null,
   uploaded_at timestamptz not null default now(),
   row_count integer not null default 0,
   status text not null default 'processing'
@@ -71,6 +71,9 @@ create table if not exists public.transaction (
   department_id text references public.department(department_id) on delete set null,
   payment_method text,
   invoice_id text,
+  voucher_number text,
+  account_head_group text,
+  voucher_type text,
   po_number text,
   has_receipt boolean not null default false,
   approval_status text not null default 'pending',
@@ -99,7 +102,7 @@ create table if not exists public.notification (
 
 create table if not exists public.notification_seen (
   notification_id text not null references public.notification(notification_id) on delete cascade,
-  user_id text not null references public."user"(user_id) on delete cascade,
+  user_id text not null references public.users(user_id) on delete cascade,
   is_read boolean not null default false,
   read_at timestamptz,
   primary key (notification_id, user_id)
@@ -107,7 +110,7 @@ create table if not exists public.notification_seen (
 
 create table if not exists public.access_log (
   log_id text primary key default gen_random_uuid()::text,
-  user_id text references public."user"(user_id) on delete set null,
+  user_id text references public.users(user_id) on delete set null,
   dept_id text references public.department(department_id) on delete set null,
   transaction_id text references public.transaction(transaction_id) on delete set null,
   action text not null,
@@ -155,7 +158,7 @@ create table if not exists public.anomaly (
   updated_at timestamptz not null default now()
 );
 
-create index if not exists idx_user_company_id on public."user"(company_id);
+create index if not exists idx_user_company_id on public.users(company_id);
 create index if not exists idx_user_role_user_id on public.user_role(user_id);
 create index if not exists idx_notification_department_id on public.notification(department_id);
 create index if not exists idx_notification_seen_user_id on public.notification_seen(user_id);
@@ -178,8 +181,8 @@ begin
 end;
 $$;
 
-drop trigger if exists trg_user_updated_at on public."user";
-create trigger trg_user_updated_at before update on public."user"
+drop trigger if exists trg_user_updated_at on public.users;
+create trigger trg_user_updated_at before update on public.users
 for each row execute procedure public.handle_updated_at();
 
 drop trigger if exists trg_transaction_updated_at on public.transaction;

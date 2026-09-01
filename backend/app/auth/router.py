@@ -9,6 +9,7 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import String, cast
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -67,12 +68,12 @@ def _encode_token(payload: dict, expires_delta: timedelta) -> str:
     return jwt.encode(claims, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def create_access_token(user_id: str) -> str:
-    return _encode_token({"sub": user_id, "type": "access"}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+def create_access_token(user_id: object) -> str:
+    return _encode_token({"sub": str(user_id), "type": "access"}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
 
 
-def create_refresh_token(user_id: str) -> str:
-    return _encode_token({"sub": user_id, "type": "refresh"}, timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
+def create_refresh_token(user_id: object) -> str:
+    return _encode_token({"sub": str(user_id), "type": "refresh"}, timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
 
 
 def decode_token(token: str, expected_type: str) -> str:
@@ -88,6 +89,10 @@ def decode_token(token: str, expected_type: str) -> str:
     return str(payload["sub"])
 
 
+def get_user_by_id(db: Session, user_id: str) -> User | None:
+    return db.query(User).filter(cast(User.user_id, String) == str(user_id)).first()
+
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     db: Session = Depends(get_db),
@@ -95,7 +100,7 @@ def get_current_user(
     if not credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     user_id = decode_token(credentials.credentials, "access")
-    user = db.query(User).filter(User.user_id == user_id).first()
+    user = get_user_by_id(db, user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
     return user
@@ -153,7 +158,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 @router.post("/refresh", response_model=RefreshResponse)
 def refresh(credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer()), db: Session = Depends(get_db)):
     user_id = decode_token(credentials.credentials, "refresh")
-    user = db.query(User).filter(User.user_id == user_id).first()
+    user = get_user_by_id(db, user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
     return RefreshResponse(

@@ -38,6 +38,9 @@ class TransactionResponse(BaseModel):
     semantic_confidence: Optional[float]
     payment_method: Optional[str]
     invoice_id: Optional[str]
+    voucher_number: Optional[str]
+    account_head_group: Optional[str]
+    voucher_type: Optional[str]
     po_number: Optional[str]
     approval_status: str
     has_receipt: bool
@@ -64,19 +67,23 @@ class TransactionUpdate(BaseModel):
     flagged_reason: Optional[str] = None
 
 
-REQUIRED_COLUMNS = ["transaction_date", "amount", "description", "chart_acc_head"]
+REQUIRED_COLUMNS = ["transaction_date", "description", "chart_acc_head"]
 
 
 def normalize_upload_columns(dataframe: pd.DataFrame) -> pd.DataFrame:
     normalized = dataframe.copy()
     column_aliases = {
         "amount": ["Debit", "debit"],
+        "credit": ["Credit", "credit"],
         "description": ["narration", "Narration"],
         "chart_acc_head": ["chart_of_acc_head", "Chart of Account Head", "chart_account_head"],
         "group_name": ["account_head_group", "Account Head Group"],
         "group_no": ["Group No", "group", "group_number"],
         "payment_method": ["Voucher_Type", "voucher_type"],
         "invoice_id": ["voucher_number", "Voucher Number"],
+        "voucher_number": ["voucher_number", "Voucher Number"],
+        "account_head_group": ["account_head_group", "Account Head Group"],
+        "voucher_type": ["Voucher_Type", "voucher_type"],
         "po_number": ["ref_number", "Reference Number"],
     }
 
@@ -121,6 +128,9 @@ def serialize_transaction(txn: Transaction) -> TransactionResponse:
         semantic_confidence=float(txn.semantic_confidence) if txn.semantic_confidence is not None else None,
         payment_method=txn.payment_method,
         invoice_id=txn.invoice_id,
+        voucher_number=txn.voucher_number,
+        account_head_group=txn.account_head_group,
+        voucher_type=txn.voucher_type,
         po_number=txn.po_number,
         approval_status=txn.approval_status,
         has_receipt=txn.has_receipt,
@@ -149,6 +159,8 @@ async def upload_transactions(
         dataframe = normalize_upload_columns(dataframe)
         dataframe = resolve_amount_and_type(dataframe)
         ensure_dataframe_columns(dataframe, REQUIRED_COLUMNS)
+        if "amount" not in dataframe.columns and "credit" not in dataframe.columns:
+            raise ValueError("Missing required columns: amount or credit")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -178,6 +190,9 @@ async def upload_transactions(
             chart_acc_head = optional_text(row, "chart_acc_head")
             cleaned_chart = clean_chart_account_head(chart_acc_head)
             invoice_id = optional_text(row, "invoice_id")
+            voucher_number = optional_text(row, "voucher_number")
+            account_head_group = optional_text(row, "account_head_group")
+            voucher_type = optional_text(row, "voucher_type")
             po_number = optional_text(row, "po_number")
             group_name = optional_text(row, "group_name")
             group_no = optional_float(row, "group_no")
@@ -207,6 +222,9 @@ async def upload_transactions(
                 group_name=group_name,
                 payment_method=optional_text(row, "payment_method"),
                 invoice_id=invoice_id,
+                voucher_number=voucher_number,
+                account_head_group=account_head_group,
+                voucher_type=voucher_type,
                 po_number=po_number,
                 has_receipt=normalize_bool(row.get("has_receipt")),
                 approval_status=str(row.get("approval_status", "pending") or "pending").lower(),

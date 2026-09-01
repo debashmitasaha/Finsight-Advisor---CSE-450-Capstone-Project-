@@ -7,10 +7,14 @@ from typing import Iterable
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from app.models import Department, User, UserRole
+from app.models import Department, Transaction, User, UserRole
 
 
 CATEGORY_VALUES = {"necessary", "unnecessary", "uncategorized"}
+
+
+def serialize_id(value: object) -> str | None:
+    return str(value) if value is not None else None
 
 
 def clean_chart_account_head(text: str | None) -> str:
@@ -64,12 +68,32 @@ def get_department_or_404(db: Session, department_id: str) -> Department:
     return department
 
 
+def calculate_department_budget_usage(transactions: list[Transaction], annual_budget: float | None) -> dict[str, float]:
+    budget = float(annual_budget or 0)
+    current_year = pd.Timestamp.utcnow().year
+    used_budget = 0.0
+
+    for transaction in transactions:
+        transaction_date = pd.to_datetime(transaction.transaction_date, utc=True, errors="coerce")
+        if pd.isna(transaction_date) or transaction_date.year != current_year:
+            continue
+        if (getattr(transaction, "transaction_type", None) or "debit").lower() != "debit":
+            continue
+        used_budget += float(transaction.amount or 0)
+
+    utilization = (used_budget / budget * 100) if budget > 0 else 0.0
+    return {
+        "used_budget_current_year": round(used_budget, 2),
+        "annual_budget_utilization_pct": round(utilization, 2),
+    }
+
+
 def serialize_user(user: User) -> dict:
     roles = []
     for role in user.roles:
         roles.append(
             {
-                "department_id": role.dept_id,
+                "department_id": serialize_id(role.dept_id),
                 "department_name": role.department.department_name if role.department else None,
                 "permissions": role.permissions or [],
             }
@@ -83,13 +107,14 @@ def serialize_user(user: User) -> dict:
         account_type = "EMPLOYEE"
 
     return {
-        "user_id": user.user_id,
+        "user_id": serialize_id(user.user_id),
         "username": user.username,
         "name": user.username,
         "email": user.email,
-        "company_id": user.company_id,
+        "company_id": serialize_id(user.company_id),
         "is_admin": user.is_admin,
         "is_active": user.is_active,
+        "last_login": user.last_login.isoformat() if user.last_login else None,
         "account_type": account_type,
         "departments": roles,
     }

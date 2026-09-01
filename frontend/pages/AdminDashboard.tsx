@@ -49,6 +49,7 @@ interface AdminDashboardProps {
 }
 
 const shellCard = 'rounded-[32px] border border-slate-200/80 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.06)]';
+const MAX_ANNUAL_BUDGET = 9_999_999_999_999.99;
 
 const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [activePath, setActivePath] = useState('/dashboard');
@@ -65,6 +66,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [selectedBatchId, setSelectedBatchId] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  const [budgetDraft, setBudgetDraft] = useState('');
+  const [savingBudget, setSavingBudget] = useState(false);
   const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
   const [groupingStats, setGroupingStats] = useState<any>(null);
   const [categorizationSummary, setCategorizationSummary] = useState<any>(null);
@@ -177,6 +180,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     [departments, selectedDeptId],
   );
 
+  useEffect(() => {
+    setBudgetDraft(selectedDepartment ? String(Number(selectedDepartment.annual_budget || 0)) : '');
+  }, [selectedDepartment]);
+
   const selectedUploadBatch = useMemo(
     () => uploadBatches.find((batch) => batch.upload_batch_id === selectedBatchId) || null,
     [uploadBatches, selectedBatchId],
@@ -276,6 +283,37 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       setStatus(err instanceof Error ? err.message : 'Unable to undo anomaly flag.');
     }
   };
+
+  const handleBudgetUpdate = async () => {
+    if (!selectedDepartment) return;
+    const nextBudget = Number(budgetDraft);
+    if (Number.isNaN(nextBudget) || nextBudget < 0) {
+      setStatus('Please enter a valid annual budget.');
+      return;
+    }
+    if (nextBudget > MAX_ANNUAL_BUDGET) {
+      setStatus('Annual budget is too large. Please enter a value below 10,000,000,000,000.');
+      return;
+    }
+
+    setSavingBudget(true);
+    setStatus('Updating annual budget...');
+    try {
+      const updatedDepartment = await api.updateDepartmentBudget(selectedDepartment.department_id, nextBudget);
+      setDepartments((current) =>
+        current.map((department) =>
+          department.department_id === updatedDepartment.department_id ? updatedDepartment : department,
+        ),
+      );
+      setBudgetDraft(String(Number(updatedDepartment.annual_budget || 0)));
+      setStatus('Annual budget updated.');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Unable to update annual budget');
+    } finally {
+      setSavingBudget(false);
+    }
+  };
+
   const triggerAction = async (action: 'group' | 'categorize' | 'forecast' | 'forensic') => {
     if (!selectedDeptId) return;
     setStatus(`Running ${action}...`);
@@ -496,6 +534,31 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
               <select value={selectedDeptId} onChange={(e) => setSelectedDeptId(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700">
                 {departments.map((department) => <option key={department.department_id} value={department.department_id}>{department.department_name}</option>)}
               </select>
+            </div>
+            <div className="rounded-[26px] border border-slate-200 bg-slate-50 p-4">
+              <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Annual Budget</label>
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <input
+                  type="number"
+                  min="0"
+                  max={MAX_ANNUAL_BUDGET}
+                  value={budgetDraft}
+                  onChange={(event) => setBudgetDraft(event.target.value.replace(/[^\d.]/g, ''))}
+                  className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700"
+                  placeholder="Annual budget"
+                />
+                <button
+                  type="button"
+                  onClick={handleBudgetUpdate}
+                  disabled={!selectedDepartment || savingBudget}
+                  className="rounded-2xl bg-blue-600 px-5 py-3 font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                >
+                  {savingBudget ? 'Updating...' : 'Update'}
+                </button>
+              </div>
+              <p className="mt-2 text-xs font-semibold text-slate-500">
+                Used this year: TK {Number(selectedDepartment?.used_budget_current_year || 0).toLocaleString()} ({Number(selectedDepartment?.annual_budget_utilization_pct || 0).toFixed(1)}%)
+              </p>
             </div>
             <label className="block rounded-[26px] border border-dashed border-blue-200 bg-blue-50/70 p-6 cursor-pointer transition hover:border-blue-400 hover:bg-blue-50">
               <div className="flex items-center gap-4">
