@@ -5,10 +5,11 @@ from pathlib import Path
 from typing import Generator
 
 from sqlalchemy import create_engine
+from sqlalchemy import func
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.models import Base
+from app.models import Base, ExpenseCategory
 
 try:
     from dotenv import load_dotenv
@@ -35,6 +36,22 @@ engine = create_engine(
 )
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+DEFAULT_EXPENSE_CATEGORIES = [
+    ("Remuneration", "Salary, wages, payroll, bonuses, allowances, and staff compensation."),
+    ("Transportation Cost", "Vehicle, freight, travel, logistics, and transport-related expenditure."),
+    ("Fuel", "Diesel, octane, petrol, generator fuel, and other fuel purchases."),
+    ("Maintenance", "Repair, servicing, replacement parts, and routine maintenance work."),
+    ("Office Supplies", "Stationery, printing, office consumables, and administrative supplies."),
+    ("Software", "Software subscriptions, licenses, hosting, and digital tools."),
+    ("Rent", "Office, warehouse, factory, equipment, or other rental payments."),
+    ("Utilities", "Electricity, water, gas, internet, phone, and similar utility bills."),
+    ("Training", "Employee training, workshops, seminars, courses, and development programs."),
+]
+
+
+def expense_category_key(name: str) -> str:
+    return " ".join(str(name or "").strip().lower().replace("&", "and").split())
 
 
 def sqlite_table_exists(conn, table_name: str) -> bool:
@@ -119,6 +136,14 @@ def sync_postgres_schema() -> None:
         text('ALTER TABLE IF EXISTS company ADD COLUMN IF NOT EXISTS dept_id UUID'),
         text('ALTER TABLE IF EXISTS "group" ADD COLUMN IF NOT EXISTS representative_text TEXT'),
         text('ALTER TABLE IF EXISTS "group" ADD COLUMN IF NOT EXISTS embedding JSONB'),
+        text('ALTER TABLE IF EXISTS "group" ADD COLUMN IF NOT EXISTS expense_category_id UUID'),
+        text("ALTER TABLE IF EXISTS \"group\" ADD COLUMN IF NOT EXISTS expense_category_status TEXT NOT NULL DEFAULT 'unassigned'"),
+        text('ALTER TABLE IF EXISTS "group" ADD COLUMN IF NOT EXISTS suggested_category_name TEXT'),
+        text('ALTER TABLE IF EXISTS "group" ADD COLUMN IF NOT EXISTS suggested_category_confidence NUMERIC(5, 4)'),
+        text('ALTER TABLE IF EXISTS "group" ADD COLUMN IF NOT EXISTS suggested_category_is_new BOOLEAN NOT NULL DEFAULT FALSE'),
+        text('ALTER TABLE IF EXISTS "group" ADD COLUMN IF NOT EXISTS suggested_category_reason TEXT'),
+        text('ALTER TABLE IF EXISTS "group" ADD COLUMN IF NOT EXISTS suggested_category_source TEXT'),
+        text('ALTER TABLE IF EXISTS "group" ADD COLUMN IF NOT EXISTS suggested_category_payload JSONB'),
         text('ALTER TABLE IF EXISTS "group" ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()'),
         text('ALTER TABLE IF EXISTS upload_batch ADD COLUMN IF NOT EXISTS department_id UUID'),
         text('ALTER TABLE IF EXISTS upload_batch ADD COLUMN IF NOT EXISTS uploaded_by UUID'),
@@ -138,6 +163,7 @@ def sync_postgres_schema() -> None:
         text('ALTER TABLE IF EXISTS transaction ADD COLUMN IF NOT EXISTS cleaned_chart_acc_head TEXT'),
         text('ALTER TABLE IF EXISTS transaction ADD COLUMN IF NOT EXISTS group_no NUMERIC(10, 2)'),
         text('ALTER TABLE IF EXISTS transaction ADD COLUMN IF NOT EXISTS group_name TEXT'),
+        text('ALTER TABLE IF EXISTS transaction ADD COLUMN IF NOT EXISTS expense_category_id UUID'),
         text('ALTER TABLE IF EXISTS transaction ADD COLUMN IF NOT EXISTS semantic_confidence NUMERIC(10, 4)'),
         text('ALTER TABLE IF EXISTS transaction ADD COLUMN IF NOT EXISTS risk_score NUMERIC(10, 4) NOT NULL DEFAULT 0'),
         text('ALTER TABLE IF EXISTS transaction ADD COLUMN IF NOT EXISTS is_flagged BOOLEAN NOT NULL DEFAULT FALSE'),
@@ -156,6 +182,10 @@ def sync_postgres_schema() -> None:
         text('ALTER TABLE IF EXISTS anomaly ADD COLUMN IF NOT EXISTS is_resolved BOOLEAN NOT NULL DEFAULT FALSE'),
         text('ALTER TABLE IF EXISTS anomaly ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()'),
         text('ALTER TABLE IF EXISTS anomaly ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()'),
+        text('CREATE INDEX IF NOT EXISTS idx_expense_category_company ON expense_category(company_id)'),
+        text('CREATE INDEX IF NOT EXISTS idx_expense_category_department ON expense_category(department_id)'),
+        text('CREATE INDEX IF NOT EXISTS idx_group_expense_category ON "group"(expense_category_id)'),
+        text('CREATE INDEX IF NOT EXISTS idx_transaction_expense_category ON transaction(expense_category_id)'),
         text("UPDATE transaction SET transaction_type = 'debit' WHERE transaction_type IS NULL"),
     ]
 
@@ -174,6 +204,17 @@ def sync_sqlite_schema() -> None:
             "voucher_number": "TEXT",
             "account_head_group": "TEXT",
             "voucher_type": "TEXT",
+            "expense_category_id": "CHAR(36)",
+        },
+        "group": {
+            "expense_category_id": "CHAR(36)",
+            "expense_category_status": "TEXT NOT NULL DEFAULT 'unassigned'",
+            "suggested_category_name": "TEXT",
+            "suggested_category_confidence": "NUMERIC(5, 4)",
+            "suggested_category_is_new": "BOOLEAN NOT NULL DEFAULT 0",
+            "suggested_category_reason": "TEXT",
+            "suggested_category_source": "TEXT",
+            "suggested_category_payload": "JSON",
         },
     }
 
@@ -188,11 +229,40 @@ def sync_sqlite_schema() -> None:
                     conn.execute(text(f'ALTER TABLE "{table_name}" ADD COLUMN {column_name} {definition}'))
 
 
+def seed_default_expense_categories() -> None:
+    with SessionLocal() as db:
+        for name, description in DEFAULT_EXPENSE_CATEGORIES:
+            key = expense_category_key(name)
+            exists = (
+                db.query(ExpenseCategory)
+                .filter(
+                    ExpenseCategory.company_id.is_(None),
+                    ExpenseCategory.department_id.is_(None),
+                    func.lower(ExpenseCategory.category_key) == key,
+                )
+                .first()
+            )
+            if exists:
+                continue
+            db.add(
+                ExpenseCategory(
+                    name=name,
+                    category_key=key,
+                    description=description,
+                    is_system=True,
+                    is_active=True,
+                )
+            )
+            db.flush()
+        db.commit()
+
+
 def init_db() -> None:
     prepare_sqlite_schema()
     Base.metadata.create_all(bind=engine)
     sync_postgres_schema()
     sync_sqlite_schema()
+    seed_default_expense_categories()
 
 
 def get_db() -> Generator[Session, None, None]:

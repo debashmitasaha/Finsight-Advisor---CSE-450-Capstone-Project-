@@ -70,6 +70,7 @@ class Department(Base):
     notifications: Mapped[list[Notification]] = relationship("Notification", back_populates="department")
     upload_batches: Mapped[list[UploadBatch]] = relationship("UploadBatch", back_populates="department")
     anomalies: Mapped[list[Anomaly]] = relationship("Anomaly", back_populates="department")
+    expense_categories: Mapped[list[ExpenseCategory]] = relationship("ExpenseCategory", back_populates="department")
 
 
 class Company(Base):
@@ -82,6 +83,7 @@ class Company(Base):
     legacy_department: Mapped[Department | None] = relationship("Department", foreign_keys=[dept_id])
     departments: Mapped[list[Department]] = relationship("Department", back_populates="company", foreign_keys=[Department.company_id])
     users: Mapped[list[User]] = relationship("User", back_populates="company")
+    expense_categories: Mapped[list[ExpenseCategory]] = relationship("ExpenseCategory", back_populates="company")
 
 
 class User(Base):
@@ -119,6 +121,27 @@ class UserRole(Base):
     user: Mapped[User] = relationship("User", back_populates="roles")
 
 
+class ExpenseCategory(Base):
+    __tablename__ = "expense_category"
+    __table_args__ = (UniqueConstraint("company_id", "department_id", "category_key", name="expense_category_scope_key"),)
+
+    category_id: Mapped[str] = mapped_column(UUIDString(), primary_key=True, default=new_id)
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("company.company_id", ondelete="CASCADE"), nullable=True)
+    department_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="CASCADE"), nullable=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    category_key: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    company: Mapped[Company | None] = relationship("Company", back_populates="expense_categories")
+    department: Mapped[Department | None] = relationship("Department", back_populates="expense_categories")
+    groups: Mapped[list[Group]] = relationship("Group", back_populates="expense_category")
+    transactions: Mapped[list[Transaction]] = relationship("Transaction", back_populates="expense_category")
+
+
 class Group(Base):
     __tablename__ = "group"
     __table_args__ = (
@@ -132,9 +155,18 @@ class Group(Base):
     group_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     representative_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     embedding: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
+    expense_category_id: Mapped[str | None] = mapped_column(ForeignKey("expense_category.category_id", ondelete="SET NULL"), nullable=True)
+    expense_category_status: Mapped[str] = mapped_column(Text, nullable=False, default="unassigned")
+    suggested_category_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suggested_category_confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    suggested_category_is_new: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    suggested_category_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suggested_category_source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suggested_category_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     department: Mapped[Department] = relationship("Department", back_populates="groups")
+    expense_category: Mapped[ExpenseCategory | None] = relationship("ExpenseCategory", back_populates="groups")
 
 
 class Transaction(Base):
@@ -162,6 +194,7 @@ class Transaction(Base):
     cleaned_chart_acc_head: Mapped[str | None] = mapped_column(Text, nullable=True)
     group_no: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
     group_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expense_category_id: Mapped[str | None] = mapped_column(ForeignKey("expense_category.category_id", ondelete="SET NULL"), nullable=True)
     semantic_confidence: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     risk_score: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
     is_flagged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -174,6 +207,7 @@ class Transaction(Base):
 
     department: Mapped[Department | None] = relationship("Department", back_populates="transactions")
     upload_batch: Mapped[UploadBatch | None] = relationship("UploadBatch", back_populates="transactions")
+    expense_category: Mapped[ExpenseCategory | None] = relationship("ExpenseCategory", back_populates="transactions")
     access_logs: Mapped[list[AccessLog]] = relationship("AccessLog", back_populates="transaction")
     case_transactions: Mapped[list[CaseTransaction]] = relationship("CaseTransaction", back_populates="transaction", cascade="all, delete-orphan")
     anomalies: Mapped[list[Anomaly]] = relationship("Anomaly", back_populates="transaction", cascade="all, delete-orphan")
@@ -298,7 +332,11 @@ Index("idx_notification_seen_user_id", NotificationSeen.user_id)
 Index("idx_access_log_user_id", AccessLog.user_id)
 Index("idx_access_log_dept_id", AccessLog.dept_id)
 Index("idx_access_log_transaction_id", AccessLog.transaction_id)
+Index("idx_expense_category_company", ExpenseCategory.company_id)
+Index("idx_expense_category_department", ExpenseCategory.department_id)
+Index("idx_group_expense_category", Group.expense_category_id)
 Index("idx_transaction_department_id", Transaction.department_id)
+Index("idx_transaction_expense_category", Transaction.expense_category_id)
 Index("idx_transaction_batch_id", Transaction.upload_batch_id)
 Index("idx_transaction_dedupe_hash", Transaction.dedupe_hash)
 Index("idx_case_transaction_transaction_id", CaseTransaction.transaction_id)

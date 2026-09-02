@@ -35,6 +35,8 @@ class TransactionResponse(BaseModel):
     cleaned_chart_acc_head: Optional[str]
     group_no: Optional[float]
     group_name: Optional[str]
+    expense_category_id: Optional[str]
+    expense_category_name: Optional[str]
     semantic_confidence: Optional[float]
     payment_method: Optional[str]
     invoice_id: Optional[str]
@@ -125,6 +127,8 @@ def serialize_transaction(txn: Transaction) -> TransactionResponse:
         cleaned_chart_acc_head=txn.cleaned_chart_acc_head,
         group_no=float(txn.group_no) if txn.group_no is not None else None,
         group_name=txn.group_name,
+        expense_category_id=txn.expense_category_id,
+        expense_category_name=txn.expense_category.name if txn.expense_category else None,
         semantic_confidence=float(txn.semantic_confidence) if txn.semantic_confidence is not None else None,
         payment_method=txn.payment_method,
         invoice_id=txn.invoice_id,

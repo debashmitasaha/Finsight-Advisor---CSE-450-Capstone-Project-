@@ -19,13 +19,22 @@ router = APIRouter(prefix="/grouping", tags=["Grouping"])
 
 class AssignGroupsRequest(BaseModel):
     dept_id: str
-    similarity_threshold: float = 0.8
+    similarity_threshold: float = 0.7
 
 
 class AssignGroupsResponse(BaseModel):
     success: bool
     groups_assigned: int
     new_groups_created: int
+
+
+def transaction_group_text(transaction: Transaction) -> str:
+    """Use narration/description for semantic grouping; account heads remain metadata."""
+    return (transaction.description or transaction.chart_acc_head or transaction.account_head_group or "").strip()
+
+
+def group_key_for_new_group(dept_id: str, group_number: float) -> str:
+    return f"description_group_{int(group_number)}"
 
 
 @router.post("/assign-groups", response_model=AssignGroupsResponse)
@@ -48,31 +57,47 @@ def assign_transaction_groups(
         return AssignGroupsResponse(success=True, groups_assigned=0, new_groups_created=0)
 
     existing_groups = db.query(Group).filter(Group.dept_id == payload.dept_id).order_by(Group.group_no.asc()).all()
-    embeddings = []
+    transaction_texts = [transaction_group_text(txn) for txn in transactions]
+    transaction_embeddings = encode_texts(transaction_texts)
+
+    # Rebuild each existing group's profile from its transaction descriptions. This
+    # also upgrades old groups whose stored embedding was based on account heads.
+    embeddings_by_group = {}
     for group in existing_groups:
-        if group.embedding:
-            embeddings.append(np.array(group.embedding, dtype=np.float32))
+        member_vectors = [
+            transaction_embeddings[index]
+            for index, txn in enumerate(transactions)
+            if txn.group_no is not None and group.group_no is not None and float(txn.group_no) == float(group.group_no)
+        ]
+        if member_vectors:
+            profile = np.mean(np.vstack(member_vectors), axis=0)
+            profile_norm = np.linalg.norm(profile)
+            embeddings_by_group[group] = profile / profile_norm if profile_norm else profile
+        elif group.representative_text:
+            embeddings_by_group[group] = encode_texts([group.representative_text])[0]
         else:
-            embeddings.append(np.zeros((0,), dtype=np.float32))
+            embeddings_by_group[group] = np.zeros((0,), dtype=np.float32)
 
     next_group_no = int(max([float(group.group_no or 0) for group in existing_groups], default=0)) + 1
     groups_assigned = 0
     new_groups_created = 0
 
-    for txn in transactions:
+    for index, txn in enumerate(transactions):
         cleaned = clean_chart_account_head(txn.chart_acc_head)
         txn.cleaned_chart_acc_head = cleaned
-        if not cleaned:
+        text = transaction_texts[index]
+        if not text:
             continue
 
-        vector = encode_texts([cleaned])[0]
+        vector = transaction_embeddings[index]
         best_match: Optional[Group] = None
         best_score = -1.0
 
-        for index, group in enumerate(existing_groups):
-            if index >= len(embeddings) or embeddings[index].size == 0:
+        for group in existing_groups:
+            profile = embeddings_by_group.get(group)
+            if profile is None or profile.size == 0:
                 continue
-            score = cosine_similarity(vector, embeddings[index])
+            score = cosine_similarity(vector, profile)
             if score > best_score:
                 best_score = score
                 best_match = group
@@ -88,15 +113,16 @@ def assign_transaction_groups(
         group_name = f"group_{int(group_number)}"
         new_group = Group(
             dept_id=payload.dept_id,
-            chart_acc_head_name=cleaned,
+            chart_acc_head_name=group_key_for_new_group(payload.dept_id, group_number),
             group_no=group_number,
             group_name=group_name,
-            representative_text=txn.chart_acc_head or cleaned,
+            representative_text=text,
             embedding=[float(x) for x in vector.tolist()],
         )
-        db.merge(new_group)
+        db.add(new_group)
+        db.flush()
         existing_groups.append(new_group)
-        embeddings.append(vector)
+        embeddings_by_group[new_group] = vector
         txn.group_no = group_number
         txn.group_name = group_name
         groups_assigned += 1

@@ -39,6 +39,20 @@ create table if not exists public.user_role (
   primary key (dept_id, user_id)
 );
 
+create table if not exists public.expense_category (
+  category_id uuid primary key default gen_random_uuid(),
+  company_id uuid references public.company(company_id) on delete cascade,
+  department_id uuid references public.department(department_id) on delete cascade,
+  name text not null,
+  category_key text not null,
+  description text,
+  is_system boolean not null default false,
+  is_active boolean not null default true,
+  created_by uuid references public.users(user_id) on delete set null,
+  created_at timestamptz not null default now(),
+  unique (company_id, department_id, category_key)
+);
+
 create table if not exists public."group" (
   dept_id uuid not null references public.department(department_id) on delete cascade,
   chart_acc_head_name text not null,
@@ -46,6 +60,14 @@ create table if not exists public."group" (
   group_name text,
   representative_text text,
   embedding jsonb,
+  expense_category_id uuid references public.expense_category(category_id) on delete set null,
+  expense_category_status text not null default 'unassigned',
+  suggested_category_name text,
+  suggested_category_confidence numeric(5, 4),
+  suggested_category_is_new boolean not null default false,
+  suggested_category_reason text,
+  suggested_category_source text,
+  suggested_category_payload jsonb,
   created_at timestamptz not null default now(),
   primary key (dept_id, chart_acc_head_name),
   unique (dept_id, group_no)
@@ -81,6 +103,7 @@ create table if not exists public.transaction (
   cleaned_chart_acc_head text,
   group_no numeric(10, 2),
   group_name text,
+  expense_category_id uuid references public.expense_category(category_id) on delete set null,
   semantic_confidence numeric(10, 4),
   risk_score numeric(10, 4) not null default 0,
   is_flagged boolean not null default false,
@@ -187,12 +210,16 @@ create table if not exists public.forensic_finding (
 
 create index if not exists idx_user_company_id on public.users(company_id);
 create index if not exists idx_user_role_user_id on public.user_role(user_id);
+create index if not exists idx_expense_category_company on public.expense_category(company_id);
+create index if not exists idx_expense_category_department on public.expense_category(department_id);
+create index if not exists idx_group_expense_category on public."group"(expense_category_id);
 create index if not exists idx_notification_department_id on public.notification(department_id);
 create index if not exists idx_notification_seen_user_id on public.notification_seen(user_id);
 create index if not exists idx_access_log_user_id on public.access_log(user_id);
 create index if not exists idx_access_log_dept_id on public.access_log(dept_id);
 create index if not exists idx_access_log_transaction_id on public.access_log(transaction_id);
 create index if not exists idx_transaction_department_id on public.transaction(department_id);
+create index if not exists idx_transaction_expense_category on public.transaction(expense_category_id);
 create index if not exists idx_transaction_batch_id on public.transaction(upload_batch_id);
 create index if not exists idx_transaction_dedupe_hash on public.transaction(dedupe_hash);
 create index if not exists idx_case_transaction_transaction_id on public.case_transaction(transaction_id);

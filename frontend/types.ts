@@ -58,6 +58,8 @@ export interface Transaction {
   cleaned_chart_acc_head: string | null;
   group_no: number | null;
   group_name: string | null;
+  expense_category_id: string | null;
+  expense_category_name: string | null;
   semantic_confidence: number | null;
   payment_method: string | null;
   invoice_id: string | null;
@@ -126,6 +128,48 @@ export interface UploadBatchSummary {
   transaction_count: number;
   first_transaction_date: string | null;
   last_transaction_date: string | null;
+}
+
+export interface ExpenseCategory {
+  category_id: string;
+  company_id: string | null;
+  department_id: string | null;
+  name: string;
+  category_key: string;
+  description: string | null;
+  is_system: boolean;
+  is_active: boolean;
+}
+
+export interface ExpenseGroupSummary {
+  dept_id: string;
+  group_no: number | null;
+  group_name: string | null;
+  chart_acc_head_name: string;
+  representative_text: string | null;
+  transaction_count: number;
+  samples: Array<{
+    description: string | null;
+    chart_acc_head: string | null;
+    account_head_group: string | null;
+    voucher_type: string | null;
+    amount: number;
+    transaction_type: string;
+  }>;
+  expense_category_id: string | null;
+  expense_category_name: string | null;
+  expense_category_status: 'unassigned' | 'pending_review' | 'approved' | 'rejected' | string;
+  suggested_category_name: string | null;
+  suggested_category_confidence: number | null;
+  suggested_category_is_new: boolean;
+  suggested_category_reason: string | null;
+  suggested_category_source: string | null;
+}
+
+export interface ExpenseCategorizationRunResponse {
+  success: boolean;
+  suggested_count: number;
+  groups: ExpenseGroupSummary[];
 }
 
 export interface ForensicRunResponse {

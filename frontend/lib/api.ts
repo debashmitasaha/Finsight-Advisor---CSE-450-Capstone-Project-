@@ -8,6 +8,9 @@ import {
   Anomaly,
   Company,
   Department,
+  ExpenseCategory,
+  ExpenseCategorizationRunResponse,
+  ExpenseGroupSummary,
   Forecast,
   ForecastContextResponse,
   ForecastRunResponse,
@@ -83,6 +86,23 @@ export const api = {
   runGrouping: (deptId: string) => request('/grouping/assign-groups', { method: 'POST', body: JSON.stringify({ dept_id: deptId }) }),
   categorizationSummary: (deptId: string) => request(`/categorization/dept/${deptId}/summary`),
   runCategorization: (deptId: string) => request('/categorization/predict', { method: 'POST', body: JSON.stringify({ dept_id: deptId }) }),
+  expenseCategories: (deptId: string) => request<ExpenseCategory[]>(`/categorization/expense-categories?dept_id=${encodeURIComponent(deptId)}`),
+  expenseGroups: (deptId: string) => request<ExpenseGroupSummary[]>(`/categorization/dept/${deptId}/expense-groups`),
+  runExpenseCategorization: (deptId: string) =>
+    request<ExpenseCategorizationRunResponse>('/categorization/expense/predict', {
+      method: 'POST',
+      body: JSON.stringify({ dept_id: deptId }),
+    }),
+  approveExpenseGroup: (payload: { dept_id: string; group_no?: number | null; chart_acc_head_name?: string | null; category_name?: string | null }) =>
+    request<{ success: boolean; category: ExpenseCategory; group: ExpenseGroupSummary }>('/categorization/expense-groups/approve', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  rejectExpenseGroup: (payload: { dept_id: string; group_no?: number | null; chart_acc_head_name?: string | null }) =>
+    request<{ success: boolean; group: ExpenseGroupSummary }>('/categorization/expense-groups/reject', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   runForecast: (
     deptId: string,
     options: {
