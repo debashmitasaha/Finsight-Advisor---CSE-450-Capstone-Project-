@@ -23,7 +23,7 @@ export const SIDEBAR_ITEMS = {
   [UserRole.SUPER_ADMIN]: [
     { name: 'Dashboard', icon: LayoutDashboard, path: '/dashboard' },
     { name: 'Companies', icon: Building2, path: '/companies' },
-    { name: 'Global Settings', icon: Settings, path: '/settings' },
+    { name: 'User Control', icon: Settings, path: '/settings' },
   ],
   [UserRole.ADMIN]: [
     { name: 'Dashboard', icon: LayoutDashboard, path: '/dashboard' },

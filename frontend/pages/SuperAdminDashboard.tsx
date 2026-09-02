@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Building2, ChevronLeft, Plus, Trash2, UserCheck, Users, UserX, Wallet, X } from 'lucide-react';
+import { Building2, ChevronLeft, Plus, RefreshCw, Trash2, UserCheck, Users, UserX, Wallet, X } from 'lucide-react';
 import Layout from '../components/Layout';
+import LoadingState from '../components/LoadingState';
 import { api } from '../lib/api';
 import { AdminOverview, Company, Department, UserAccount, UserRole } from '../types';
 
@@ -21,12 +22,12 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
   const [error, setError] = useState<string | null>(null);
   const [companyName, setCompanyName] = useState('');
   const [departmentName, setDepartmentName] = useState('');
-  const [departmentBudget, setDepartmentBudget] = useState('0');
+  const [departmentBudget, setDepartmentBudget] = useState('');
   const [departmentCompanyId, setDepartmentCompanyId] = useState('');
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null);
   const [showAddCompanyModal, setShowAddCompanyModal] = useState(false);
   const [showAddUserModal, setShowAddUserModal] = useState(false);
-  const [newUser, setNewUser] = useState({ username: '', email: '', password: 'password123', company_id: '', is_admin: false });
+  const [newUser, setNewUser] = useState(() => ({ username: '', email: '', password: generatePassword(), company_id: '', is_admin: false }));
 
   const selectedCompany = useMemo(
     () => companies.find((company) => company.company_id === selectedCompanyId) || null,
@@ -38,7 +39,35 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
     [selectedCompany, users],
   );
 
+  const companyNameById = useMemo(() => new Map(companies.map((company) => [company.company_id, company.company_name])), [companies]);
+
   const companyOptions = useMemo(() => companies.map((company) => ({ value: company.company_id, label: company.company_name })), [companies]);
+
+  const departmentActivityGroups = useMemo(() => {
+    const groups = new Map<string, { companyId: string | null; companyName: string; departments: Department[] }>();
+
+    (overview?.department_summaries || []).forEach((department) => {
+      const groupKey = department.company_id || 'unassigned';
+      const companyName = department.company_name || (department.company_id ? companyNameById.get(department.company_id) : null) || 'Unassigned Company';
+
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, {
+          companyId: department.company_id || null,
+          companyName,
+          departments: [],
+        });
+      }
+
+      groups.get(groupKey)?.departments.push(department);
+    });
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        ...group,
+        departments: [...group.departments].sort((left, right) => left.department_name.localeCompare(right.department_name)),
+      }))
+      .sort((left, right) => left.companyName.localeCompare(right.companyName));
+  }, [companyNameById, overview?.department_summaries]);
 
   const loadData = async () => {
     setLoading(true);
@@ -102,11 +131,11 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
     try {
       await api.createDepartment({
         department_name: departmentName,
-        annual_budget: Number(departmentBudget),
+        annual_budget: departmentBudget === '' ? 0 : Number(departmentBudget),
         company_id: departmentCompanyId || null,
       });
       setDepartmentName('');
-      setDepartmentBudget('0');
+      setDepartmentBudget('');
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to create department');
@@ -116,7 +145,7 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
   const createUser = async (event: React.FormEvent) => {
     event.preventDefault();
     await createUserFromPayload(newUser);
-    setNewUser({ username: '', email: '', password: 'password123', company_id: '', is_admin: false });
+    setNewUser({ username: '', email: '', password: generatePassword(), company_id: '', is_admin: false });
   };
 
   const createUserFromPayload = async (payload: { username: string; email: string; password: string; company_id?: string | null; is_admin: boolean }) => {
@@ -193,14 +222,33 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
               </tr>
             </thead>
             <tbody>
-              {(overview?.department_summaries || []).map((department) => (
-                <tr key={department.department_id} className="border-t border-slate-100 text-sm text-slate-700">
-                  <td className="py-3 font-semibold">{department.department_name}</td>
-                  <td className="py-3">TK {Number(department.annual_budget || 0).toLocaleString()}</td>
-                  <td className="py-3">TK {Number(department.used_budget_current_year || 0).toLocaleString()}</td>
-                  <td className="py-3">{Number(department.annual_budget_utilization_pct || 0).toFixed(1)}%</td>
-                  <td className="py-3">{department.transaction_count || 0}</td>
+              {departmentActivityGroups.length === 0 && (
+                <tr className="border-t border-slate-100 text-sm text-slate-500">
+                  <td colSpan={5} className="py-6 text-center font-semibold">No departments yet</td>
                 </tr>
+              )}
+              {departmentActivityGroups.map((group) => (
+                <React.Fragment key={group.companyId || 'unassigned'}>
+                  <tr className="border-t border-slate-200 bg-slate-50/80 text-xs uppercase tracking-wider text-slate-500">
+                    <td colSpan={5} className="px-3 py-3 font-black">
+                      <div className="flex items-center justify-between gap-4">
+                        <span>{group.companyName}</span>
+                        <span className="text-[11px] font-bold normal-case tracking-normal text-slate-400">
+                          {group.departments.length} {group.departments.length === 1 ? 'department' : 'departments'}
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                  {group.departments.map((department) => (
+                    <tr key={department.department_id} className="border-t border-slate-100 text-sm text-slate-700">
+                      <td className="py-3 font-semibold">{department.department_name}</td>
+                      <td className="py-3">TK {Number(department.annual_budget || 0).toLocaleString()}</td>
+                      <td className="py-3">TK {Number(department.used_budget_current_year || 0).toLocaleString()}</td>
+                      <td className="py-3">{Number(department.annual_budget_utilization_pct || 0).toFixed(1)}%</td>
+                      <td className="py-3">{department.transaction_count || 0}</td>
+                    </tr>
+                  ))}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
@@ -277,7 +325,7 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
   const renderSettings = () => (
     <div className="grid grid-cols-1 xl:grid-cols-[1fr,1fr] gap-8">
       <div className={cardStyle}>
-        <h2 className="text-xl font-bold text-slate-900 mb-4">Users</h2>
+        <h2 className="text-xl font-bold text-slate-900 mb-4">User Control</h2>
         <div className="space-y-3 max-h-[480px] overflow-auto">
           {users.map((account) => (
             <div key={account.user_id} className="p-4 rounded-2xl bg-slate-50 border border-slate-200">
@@ -285,6 +333,9 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
                 <div>
                   <p className="font-bold text-slate-900">{account.name}</p>
                   <p className="text-sm text-slate-500">{account.email}</p>
+                  <p className="text-xs font-semibold text-slate-500 mt-1">
+                    {account.company_id ? companyNameById.get(account.company_id) || 'Unknown Company' : 'No Company'}
+                  </p>
                   <p className="text-xs text-slate-400 mt-1">{account.account_type} | {account.is_active ? 'Live' : 'Disabled'}</p>
                 </div>
                 <div className="flex gap-2">
@@ -305,7 +356,17 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
         <div className="space-y-3">
           <input value={newUser.username} onChange={(e) => setNewUser((prev) => ({ ...prev, username: e.target.value }))} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3" placeholder="Username" required />
           <input value={newUser.email} onChange={(e) => setNewUser((prev) => ({ ...prev, email: e.target.value }))} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3" placeholder="Email" required />
-          <input value={newUser.password} onChange={(e) => setNewUser((prev) => ({ ...prev, password: e.target.value }))} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3" placeholder="Password" required />
+          <div className="flex gap-2">
+            <input value={newUser.password} onChange={(e) => setNewUser((prev) => ({ ...prev, password: e.target.value }))} className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3" placeholder="Password" required />
+            <button
+              type="button"
+              onClick={() => setNewUser((prev) => ({ ...prev, password: generatePassword() }))}
+              className="inline-flex items-center gap-2 rounded-2xl bg-slate-100 px-4 font-bold text-slate-700 transition hover:bg-slate-200"
+            >
+              <RefreshCw size={16} />
+              Generate
+            </button>
+          </div>
           <select value={newUser.company_id} onChange={(e) => setNewUser((prev) => ({ ...prev, company_id: e.target.value }))} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
             <option value="">No company / super admin</option>
             {companyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -321,7 +382,7 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
   );
 
   const content = loading
-    ? <p className="text-slate-500">Loading dashboard...</p>
+    ? <LoadingState label="Loading dashboard" />
     : activePath === '/dashboard'
       ? renderDashboard()
       : activePath === '/companies'
@@ -505,7 +566,10 @@ const CreateUserModal = ({
           </select>
           <div className="flex gap-2">
             <input value={password} onChange={(event) => setPassword(event.target.value)} className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3" placeholder="Initial password" required />
-            <button type="button" onClick={() => setPassword(generatePassword())} className="rounded-2xl bg-slate-100 px-4 font-bold text-slate-700">Generate</button>
+            <button type="button" onClick={() => setPassword(generatePassword())} className="inline-flex items-center gap-2 rounded-2xl bg-slate-100 px-4 font-bold text-slate-700 transition hover:bg-slate-200">
+              <RefreshCw size={16} />
+              Generate
+            </button>
           </div>
         </div>
         <div className="mt-6 flex gap-3">

@@ -30,6 +30,19 @@ def get_department_budget_snapshot(db: Session, department: Department) -> dict[
     return calculate_department_budget_usage(transactions, float(department.annual_budget or 0))
 
 
+def serialize_department_summary(db: Session, department: Department) -> dict[str, object]:
+    company = department.company
+    return {
+        "department_id": str(department.department_id),
+        "department_name": department.department_name,
+        "company_id": str(department.company_id) if department.company_id else None,
+        "company_name": company.company_name if company else None,
+        "annual_budget": float(department.annual_budget or 0),
+        "transaction_count": count_transactions_for_department(db, department.department_id),
+        **get_department_budget_snapshot(db, department),
+    }
+
+
 class CompanyCreate(BaseModel):
     company_name: str
 
@@ -75,24 +88,12 @@ def admin_overview(current_user: User = Depends(get_current_user), db: Session =
         transactions_query = transactions_query.filter(Transaction.department_id.in_(department_ids if department_ids else [""]))
         uploads_query = uploads_query.filter(UploadBatch.department_id.in_(department_ids if department_ids else [""]))
         departments = [
-            {
-                "department_id": str(dept.department_id),
-                "department_name": dept.department_name,
-                "annual_budget": float(dept.annual_budget or 0),
-                "transaction_count": count_transactions_for_department(db, dept.department_id),
-                **get_department_budget_snapshot(db, dept),
-            }
+            serialize_department_summary(db, dept)
             for dept in db.query(Department).filter(Department.company_id == company_filter).all()
         ]
     else:
         departments = [
-            {
-                "department_id": str(dept.department_id),
-                "department_name": dept.department_name,
-                "annual_budget": float(dept.annual_budget or 0),
-                "transaction_count": count_transactions_for_department(db, dept.department_id),
-                **get_department_budget_snapshot(db, dept),
-            }
+            serialize_department_summary(db, dept)
             for dept in departments_query.all()
         ]
 

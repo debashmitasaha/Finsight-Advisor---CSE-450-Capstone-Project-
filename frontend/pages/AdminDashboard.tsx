@@ -1,15 +1,22 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowRight,
   ArrowUpRight,
   BarChart3,
+  Check,
   CheckCircle2,
+  ChevronRight,
+  Clock,
   CircleDollarSign,
   Eye,
   FileUp,
+  Plus,
+  Shield,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
+  Table,
   TrendingUp,
   Upload,
   WalletCards,
@@ -28,6 +35,7 @@ import {
   YAxis,
 } from 'recharts';
 import Layout from '../components/Layout';
+import LoadingState from '../components/LoadingState';
 import ForensicIntelligence from './ForensicIntelligence';
 import { api } from '../lib/api';
 import {
@@ -50,6 +58,12 @@ interface AdminDashboardProps {
 
 const shellCard = 'rounded-[32px] border border-slate-200/80 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.06)]';
 const MAX_ANNUAL_BUDGET = 9_999_999_999_999.99;
+const EMPLOYEE_SCOPE_OPTIONS = [
+  { id: 'view_transactions', label: 'View Ledger' },
+  { id: 'run_analysis', label: 'Run Analysis' },
+  { id: 'view_forecasts', label: 'View Forecasts' },
+  { id: 'manage_department', label: 'Dept Control' },
+] as const;
 
 const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [activePath, setActivePath] = useState('/dashboard');
@@ -314,6 +328,28 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     }
   };
 
+  const handleUpdateEmployeeScopes = async (userId: string, permissionsByDepartment: Record<string, string[]>) => {
+    const employee = employees.find((item) => item.user_id === userId);
+    const existingDepartmentIds = employee?.departments.map((role) => role.department_id) || [];
+    const targetDepartmentIds = Object.keys(permissionsByDepartment);
+    const departmentIds = Array.from(new Set([...existingDepartmentIds, ...targetDepartmentIds]));
+
+    setStatus('Updating employee access...');
+    try {
+      await Promise.all(
+        departmentIds.map((departmentId) =>
+          api.assignRole(userId, departmentId, permissionsByDepartment[departmentId] || []),
+        ),
+      );
+      const refreshedUsers = await api.users();
+      setEmployees(refreshedUsers);
+      setStatus('Employee access updated.');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Unable to update employee access');
+      throw error;
+    }
+  };
+
   const triggerAction = async (action: 'group' | 'categorize' | 'forecast' | 'forensic') => {
     if (!selectedDeptId) return;
     setStatus(`Running ${action}...`);
@@ -443,6 +479,21 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         title={selectedDepartment ? `${selectedDepartment.department_name} Intelligence` : 'Executive Intelligence'}
         description="A sharper operational workspace for budget oversight, forecast confidence, and risk visibility."
         actionLabel="Detailed PDF"
+        actionContent={
+          <select
+            value={selectedDeptId}
+            onChange={(event) => setSelectedDeptId(event.target.value)}
+            disabled={!departments.length}
+            className="min-h-[56px] min-w-[220px] rounded-[22px] border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-700 shadow-[0_15px_40px_rgba(15,23,42,0.06)] outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+            aria-label="Select department"
+          >
+            {departments.map((department) => (
+              <option key={department.department_id} value={department.department_id}>
+                {department.department_name}
+              </option>
+            ))}
+          </select>
+        }
       />
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
@@ -966,34 +1017,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   );
 
   const employeesView = (
-    <div className="space-y-8">
-      <HeroHeader
-        eyebrow="Team Oversight"
-        title="Employee Access Map"
-        description="A more polished roster view for company users and their operational access."
-        actionLabel="Employees"
-      />
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-        {employees.map((employee) => (
-          <div key={employee.user_id} className={`${shellCard} p-6 bg-[radial-gradient(circle_at_top_right,_rgba(59,130,246,0.08),_transparent_38%),white]`}>
-            <div className="flex items-center justify-between">
-              <div className="h-12 w-12 rounded-2xl bg-slate-950 text-white flex items-center justify-center font-black">
-                {employee.name.charAt(0)}
-              </div>
-              <span className="rounded-full bg-blue-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] text-blue-700">
-                {employee.account_type}
-              </span>
-            </div>
-            <p className="mt-5 text-lg font-black text-slate-950">{employee.name}</p>
-            <p className="mt-1 text-sm text-slate-500">{employee.email}</p>
-          </div>
-        ))}
-      </div>
-    </div>
+    <EmployeeAccessSection
+      accounts={employees.filter((employee) => employee.account_type === 'EMPLOYEE')}
+      departments={departments}
+      onUpdatePermissions={handleUpdateEmployeeScopes}
+    />
   );
 
   const content = loading
-    ? <p className="text-slate-500">Loading admin workspace...</p>
+    ? <LoadingState label="Loading admin workspace" />
     : activePath === '/dashboard'
       ? overview
       : activePath === '/dept-control'
@@ -1095,19 +1127,298 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   );
 };
 
-const HeroHeader = ({ eyebrow, title, description, actionLabel }: { eyebrow: string; title: string; description: string; actionLabel: string }) => (
+const HeroHeader = ({
+  eyebrow,
+  title,
+  description,
+  actionLabel,
+  actionContent,
+}: {
+  eyebrow: string;
+  title: string;
+  description: string;
+  actionLabel: string;
+  actionContent?: React.ReactNode;
+}) => (
   <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
     <div>
       <p className="text-[11px] font-black uppercase tracking-[0.28em] text-blue-600">{eyebrow}</p>
       <h1 className="mt-2 text-4xl font-black tracking-[-0.04em] text-slate-950">{title}</h1>
       <p className="mt-3 max-w-2xl text-lg text-slate-500">{description}</p>
     </div>
-    <button className="inline-flex items-center gap-2 self-start rounded-[22px] border border-slate-200 bg-white px-5 py-4 font-bold text-slate-700 shadow-[0_15px_40px_rgba(15,23,42,0.06)]">
-      <ArrowUpRight size={18} />
-      {actionLabel}
-    </button>
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center xl:justify-end">
+      {actionContent}
+      <button className="inline-flex min-h-[56px] items-center justify-center gap-2 rounded-[22px] border border-slate-200 bg-white px-5 py-4 font-bold text-slate-700 shadow-[0_15px_40px_rgba(15,23,42,0.06)]">
+        <ArrowUpRight size={18} />
+        {actionLabel}
+      </button>
+    </div>
   </div>
 );
+
+const EmployeeAccessSection = ({
+  accounts,
+  departments,
+  onUpdatePermissions,
+}: {
+  accounts: UserAccount[];
+  departments: Department[];
+  onUpdatePermissions: (userId: string, permissionsByDepartment: Record<string, string[]>) => Promise<void>;
+}) => {
+  const [expandedEmployeeId, setExpandedEmployeeId] = useState<string | null>(null);
+  const [permissionDrafts, setPermissionDrafts] = useState<Record<string, Record<string, string[]>>>({});
+  const [openAccessPickerId, setOpenAccessPickerId] = useState<string | null>(null);
+  const [savingEmployeeId, setSavingEmployeeId] = useState<string | null>(null);
+  const [savedEmployeeId, setSavedEmployeeId] = useState<string | null>(null);
+
+  const employeePermissions = (employee: UserAccount) =>
+    permissionDrafts[employee.user_id] ??
+    employee.departments.reduce<Record<string, string[]>>((accumulator, role) => {
+      accumulator[role.department_id] = role.permissions || [];
+      return accumulator;
+    }, {});
+
+  const updateEmployeePermissions = (
+    employee: UserAccount,
+    updater: (permissions: Record<string, string[]>) => Record<string, string[]>,
+  ) => {
+    setPermissionDrafts((current) => ({
+      ...current,
+      [employee.user_id]: updater(employeePermissions(employee)),
+    }));
+    setSavedEmployeeId(null);
+  };
+
+  const togglePermission = (employee: UserAccount, departmentId: string, permissionId: string) => {
+    updateEmployeePermissions(employee, (currentPermissions) => {
+      const current = currentPermissions[departmentId] || [];
+      const next = current.includes(permissionId)
+        ? current.filter((permission) => permission !== permissionId)
+        : [...current, permissionId];
+      return { ...currentPermissions, [departmentId]: next };
+    });
+  };
+
+  const addDepartmentAccess = (employee: UserAccount, departmentId: string) => {
+    updateEmployeePermissions(employee, (currentPermissions) => ({
+      ...currentPermissions,
+      [departmentId]: ['view_transactions'],
+    }));
+    setOpenAccessPickerId(null);
+  };
+
+  const revokeDepartmentAccess = (employee: UserAccount, departmentId: string) => {
+    updateEmployeePermissions(employee, (currentPermissions) => {
+      const updated = { ...currentPermissions };
+      delete updated[departmentId];
+      return updated;
+    });
+  };
+
+  const saveEmployeeAccess = async (employee: UserAccount) => {
+    setSavingEmployeeId(employee.user_id);
+    try {
+      await onUpdatePermissions(employee.user_id, employeePermissions(employee));
+      setPermissionDrafts((current) => {
+        const updated = { ...current };
+        delete updated[employee.user_id];
+        return updated;
+      });
+      setSavedEmployeeId(employee.user_id);
+      window.setTimeout(() => setSavedEmployeeId(null), 1600);
+    } finally {
+      setSavingEmployeeId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-8">
+      <HeroHeader
+        eyebrow="Team Oversight"
+        title="Employee Access Map"
+        description="Choose which company departments and workspace sections each employee can access."
+        actionLabel="Employees"
+      />
+      <div className="space-y-5">
+        {accounts.map((employee) => {
+          const permissions = employeePermissions(employee);
+          const isExpanded = expandedEmployeeId === employee.user_id;
+          const authorizedDepartmentIds = Object.keys(permissions);
+          const availableDepartments = departments.filter((department) => !permissions[department.department_id]);
+          const isSaving = savingEmployeeId === employee.user_id;
+          const isSaved = savedEmployeeId === employee.user_id;
+
+          return (
+            <div key={employee.user_id} className={`${shellCard} overflow-visible bg-white`}>
+              <div className="p-6">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-center gap-4">
+                    <div className="h-12 w-12 rounded-2xl bg-slate-950 text-white flex items-center justify-center font-black">
+                      {employee.name.charAt(0)}
+                    </div>
+                    <div>
+                      <p className="text-lg font-black text-slate-950">{employee.name}</p>
+                      <p className="mt-1 text-sm text-slate-500">{employee.email}</p>
+                    </div>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] ${employee.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+                    {employee.is_active ? 'Active' : 'Disabled'}
+                  </span>
+                </div>
+
+                <div className="mt-6 flex flex-col gap-3 border-t border-slate-100 pt-5 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-center gap-2 text-slate-500">
+                    <Clock size={16} />
+                    <span className="text-[10px] font-black uppercase tracking-[0.18em]">
+                      {authorizedDepartmentIds.length} {authorizedDepartmentIds.length === 1 ? 'unit' : 'units'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExpandedEmployeeId((current) => current === employee.user_id ? null : employee.user_id);
+                      setOpenAccessPickerId(null);
+                    }}
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl bg-blue-50 px-4 py-2 text-sm font-black text-blue-600 transition hover:bg-blue-100"
+                  >
+                    {isExpanded ? 'Hide Controls' : 'Configure'}
+                    <ChevronRight size={16} className={`transition ${isExpanded ? 'rotate-90' : ''}`} />
+                  </button>
+                </div>
+
+                {isExpanded && (
+                  <div className="mt-6 space-y-5 rounded-[28px] border border-slate-200 bg-slate-50/70 p-5">
+                    <div className="flex items-center gap-3">
+                      <Shield className="text-blue-600" size={20} />
+                      <div>
+                        <h3 className="font-black text-slate-950">Department Scopes</h3>
+                        <p className="text-sm font-medium text-slate-500">Toggle access sections for this employee.</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      {authorizedDepartmentIds.map((departmentId) => {
+                        const department = departments.find((item) => item.department_id === departmentId);
+                        if (!department) return null;
+
+                        return (
+                          <div key={departmentId} className="rounded-[24px] border border-slate-200 bg-white p-4">
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                              <div className="flex items-center gap-3">
+                                <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-blue-600">
+                                  <Table size={16} />
+                                </div>
+                                <div>
+                                  <p className="font-black text-slate-950">{department.department_name}</p>
+                                  <p className="text-xs font-semibold text-slate-400">{permissions[departmentId]?.length || 0} permissions enabled</p>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => revokeDepartmentAccess(employee, departmentId)}
+                                className="self-start rounded-xl border border-red-100 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.12em] text-red-500 transition hover:bg-red-50 sm:self-auto"
+                              >
+                                Revoke
+                              </button>
+                            </div>
+
+                            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                              {EMPLOYEE_SCOPE_OPTIONS.map((permission) => {
+                                const isActive = permissions[departmentId]?.includes(permission.id);
+                                return (
+                                  <button
+                                    key={permission.id}
+                                    type="button"
+                                    onClick={() => togglePermission(employee, departmentId, permission.id)}
+                                    className={`flex min-h-[56px] items-center justify-between rounded-2xl border px-4 py-3 text-left transition ${isActive ? 'border-blue-300 bg-blue-50/70 shadow-sm ring-1 ring-blue-100' : 'border-slate-200 bg-white text-slate-400 hover:text-slate-700'}`}
+                                  >
+                                    <span className={`text-xs font-black uppercase tracking-[0.08em] ${isActive ? 'text-slate-900' : ''}`}>{permission.label}</span>
+                                    <span className={`flex h-5 w-9 items-center rounded-full p-0.5 transition ${isActive ? 'bg-blue-600' : 'bg-slate-300'}`}>
+                                      <span className={`h-4 w-4 rounded-full bg-white transition ${isActive ? 'translate-x-4' : 'translate-x-0'}`} />
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {!authorizedDepartmentIds.length && (
+                        <div className="rounded-[24px] border border-dashed border-slate-200 bg-white p-8 text-center text-sm font-semibold text-slate-400">
+                          This employee does not have department access yet.
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="relative flex flex-col gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:items-center sm:justify-between">
+                      <button
+                        type="button"
+                        onClick={() => setOpenAccessPickerId((current) => current === employee.user_id ? null : employee.user_id)}
+                        className="inline-flex items-center justify-center gap-2 rounded-2xl border border-blue-100 bg-white px-4 py-3 font-black text-blue-600 shadow-sm transition hover:bg-blue-50"
+                      >
+                        <Plus size={18} />
+                        Grant Department
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => saveEmployeeAccess(employee)}
+                        disabled={isSaving}
+                        className={`inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3 font-black text-white transition disabled:opacity-70 ${isSaved ? 'bg-emerald-600' : 'bg-blue-600 hover:bg-blue-700'}`}
+                      >
+                        {isSaving ? (
+                          <>
+                            <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                            Saving
+                          </>
+                        ) : isSaved ? (
+                          <>
+                            <Check size={18} />
+                            Saved
+                          </>
+                        ) : (
+                          'Save Access'
+                        )}
+                      </button>
+
+                      {openAccessPickerId === employee.user_id && (
+                        <div className="absolute bottom-full left-0 mb-3 w-80 rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl">
+                          <p className="border-b border-slate-50 p-2 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Available Departments</p>
+                          <div className="max-h-56 space-y-1 overflow-y-auto pt-2">
+                            {availableDepartments.map((department) => (
+                              <button
+                                key={department.department_id}
+                                type="button"
+                                onClick={() => addDepartmentAccess(employee, department.department_id)}
+                                className="group flex w-full items-center justify-between rounded-xl p-3 text-left text-sm font-bold text-slate-700 transition hover:bg-blue-600 hover:text-white"
+                              >
+                                <span>{department.department_name}</span>
+                                <ArrowRight size={14} className="opacity-0 transition group-hover:opacity-100" />
+                              </button>
+                            ))}
+                            {!availableDepartments.length && (
+                              <p className="p-6 text-center text-xs font-semibold text-slate-400">All departments are already assigned.</p>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {!accounts.length && (
+          <div className="col-span-full rounded-[32px] border border-dashed border-slate-200 bg-slate-50 p-12 text-center text-sm font-semibold text-slate-400">
+            No employee accounts found for this company yet.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 const SectionKicker = ({ title, subtitle }: { title: string; subtitle: string }) => (
   <div>

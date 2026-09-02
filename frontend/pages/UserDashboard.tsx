@@ -11,6 +11,7 @@ import {
   Zap,
 } from 'lucide-react';
 import Layout from '../components/Layout';
+import LoadingState from '../components/LoadingState';
 import { api } from '../lib/api';
 import { Anomaly, Department, Forecast, ForecastDiagnostics, Transaction, UserAccount } from '../types';
 import { COLORS } from '../constants';
@@ -119,24 +120,39 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
             <p className="mt-2 text-[11px] font-black uppercase tracking-[0.28em] text-slate-400">Fiscal Management Interface</p>
           </div>
         </div>
-        <div className="inline-flex rounded-[28px] bg-slate-100 p-2 shadow-inner">
-          {quickTabs.map(({ path, label, icon: Icon }) => {
-            const isActive = activePath === path || (path === '/projections' && activePath === '/departments');
-            return (
-              <button
-                key={path}
-                onClick={() => setActivePath(path === '/projections' ? '/departments' : path)}
-                className={`inline-flex items-center gap-3 rounded-[22px] px-5 py-3 text-sm font-bold transition ${
-                  isActive
-                    ? 'bg-white text-[#2f67ec] shadow-[0_10px_25px_rgba(15,23,42,0.08)]'
-                    : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                <Icon size={18} />
-                {label}
-              </button>
-            );
-          })}
+        <div className="flex flex-col gap-3 xl:items-end">
+          <select
+            value={selectedDeptId}
+            onChange={(event) => setSelectedDeptId(event.target.value)}
+            disabled={!departments.length}
+            className="min-h-[52px] w-full rounded-[22px] border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-700 shadow-[0_12px_28px_rgba(15,23,42,0.05)] outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 xl:w-72"
+            aria-label="Select department"
+          >
+            {departments.map((department) => (
+              <option key={department.department_id} value={department.department_id}>
+                {department.department_name}
+              </option>
+            ))}
+          </select>
+          <div className="inline-flex rounded-[28px] bg-slate-100 p-2 shadow-inner">
+            {quickTabs.map(({ path, label, icon: Icon }) => {
+              const isActive = activePath === path || (path === '/projections' && activePath === '/departments');
+              return (
+                <button
+                  key={path}
+                  onClick={() => setActivePath(path === '/projections' ? '/departments' : path)}
+                  className={`inline-flex items-center gap-3 rounded-[22px] px-5 py-3 text-sm font-bold transition ${
+                    isActive
+                      ? 'bg-white text-[#2f67ec] shadow-[0_10px_25px_rgba(15,23,42,0.08)]'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <Icon size={18} />
+                  {label}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 
@@ -283,7 +299,7 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
   );
 
   const content = loading
-    ? <p className="text-slate-500">Loading your workspace...</p>
+    ? <LoadingState label="Loading your workspace" />
     : activePath === '/analysis'
       ? analysisView
       : activePath === '/history'

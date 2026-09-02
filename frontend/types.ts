@@ -40,6 +40,7 @@ export interface Department {
   annual_budget: number;
   is_active?: boolean;
   company_id?: string | null;
+  company_name?: string | null;
   transaction_count?: number;
   used_budget_current_year?: number;
   annual_budget_utilization_pct?: number;
