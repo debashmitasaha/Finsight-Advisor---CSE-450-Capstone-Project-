@@ -78,7 +78,8 @@ const VIEW_META: Record<ForensicView, { label: string; icon: React.ElementType; 
   behavioral: {
     label: 'Behavioural AI',
     icon: Activity,
-    blurb: 'Learns what is normal for each account head, then flags what breaks that entity’s own pattern.',
+    blurb:
+      'Learns what is normal for each account head, then flags what breaks that entity’s own pattern. A head too new to judge is compared with its approved expense category instead.',
   },
   temporal: {
     label: 'Temporal',
@@ -530,6 +531,11 @@ const Header = ({
               {analysis.diagnostics.date_range.from} &rarr; {analysis.diagnostics.date_range.to}
             </span>
             <span>{analysis.diagnostics.signals_total.toLocaleString()} evidence signals raised</span>
+            <span>
+              baselines: {analysis.diagnostics.entity_kinds_active.map((kind) => kind.replace(/_/g, ' ')).join(', ')}
+              {typeof analysis.diagnostics.data_quality.expense_category_coverage === 'number' &&
+                ` · ${Math.round(analysis.diagnostics.data_quality.expense_category_coverage * 100)}% of rows carry an approved expense category`}
+            </span>
           </div>
         )}
       </div>

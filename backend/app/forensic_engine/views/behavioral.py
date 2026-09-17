@@ -31,6 +31,7 @@ def run(
         return signals, {"ensemble": "skipped", "reason": "no rows"}
 
     signals += _deviation_signals(frame, baselines, config)
+    signals += _category_fallback_signals(frame, baselines, config)
     signals += _new_entity_signals(frame, baselines, config)
     ensemble_signals, ensemble_meta = _ensemble_signals(frame, baselines, config)
     signals += ensemble_signals
@@ -86,6 +87,76 @@ def _deviation_signals(
                     },
                 )
             )
+    return signals
+
+
+def _category_fallback_signals(
+    frame: pd.DataFrame,
+    baselines: dict[str, dict[str, EntityBaseline]],
+    config: EngineConfig,
+) -> list[Signal]:
+    """Amount deviation against the approved expense category, for rows whose account
+    head is too thin to judge on its own.
+
+    A category (Fuel, Rent, Maintenance) pools many heads, so it is a coarser yardstick
+    than the head itself — but a head with two prior payments has no yardstick at all, and
+    `_deviation_signals` has to skip it. Categories come from the categorization pipeline,
+    where an admin approved every assignment, so the cohort is clean enough to lean on.
+
+    Only rows the head test could not assess are scored here, and only when the category
+    genuinely carries more history than the head. The same overspend is therefore never
+    counted twice: a row gets the head verdict or the category verdict, never both.
+    """
+    signals: list[Signal] = []
+    category_baselines = baselines.get("expense_category", {})
+    if not category_baselines or "entity_expense_category" not in frame.columns:
+        return signals
+
+    head_baselines = baselines.get("account_head", {})
+    for row in frame[frame["amount"] > 0].itertuples():
+        category = row.entity_expense_category
+        if not category:
+            continue
+        baseline = category_baselines.get(category)
+        if baseline is None or baseline.count < config.min_baseline_events:
+            continue
+
+        head = head_baselines.get(row.entity_account_head)
+        head_events = head.count if head is not None else 0
+        if head_events >= config.min_baseline_events:
+            continue  # the head test already judged this row
+        if baseline.count <= head_events:
+            continue  # the category adds no history the head did not already have
+
+        score = baseline.robust_z(row.amount)
+        strength = log_ramp(score, config.robust_z_soft, config.robust_z_hard) * 0.8
+        if strength <= 0 or row.amount <= baseline.median:
+            continue
+
+        multiple = row.amount / baseline.median if baseline.median > 0 else float("inf")
+        signals.append(
+            Signal(
+                row.transaction_id,
+                VIEW,
+                "expense_category_amount_deviation",
+                strength,
+                f"{row.amount:,.2f} is {multiple:.1f}x the typical {baseline.median:,.2f} for expense category "
+                f"'{category}'; account head '{row.entity_account_head}' has only {head_events} payment(s), "
+                f"too few for a baseline of its own",
+                {
+                    "entity_kind": "expense_category",
+                    "entity_key": category,
+                    "account_head": row.entity_account_head,
+                    "head_events": head_events,
+                    "amount": float(row.amount),
+                    "entity_median": round(baseline.median, 2),
+                    "entity_mad": round(baseline.mad, 2),
+                    "entity_events": baseline.count,
+                    "robust_z": round(score, 2),
+                    "multiple_of_median": round(multiple, 2) if np.isfinite(multiple) else None,
+                },
+            )
+        )
     return signals
 
 

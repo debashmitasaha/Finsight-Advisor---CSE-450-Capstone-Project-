@@ -5,7 +5,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.auth.router import get_current_user
 from app.database import get_db
@@ -90,8 +90,11 @@ def _company_or_400(department: Department) -> Company:
 
 
 def _transactions(db: Session, dept_id: str) -> list[Transaction]:
+    # The approved expense category is loaded with the rows so the engine can use it as an
+    # entity without a query per transaction.
     return (
         db.query(Transaction)
+        .options(joinedload(Transaction.expense_category))
         .filter(Transaction.department_id == dept_id)
         .order_by(Transaction.transaction_date.asc())
         .all()
@@ -544,6 +547,11 @@ def capabilities(dept_id: str | None = None, current_user: User = Depends(get_cu
         },
         "injection_scenarios": list(AVAILABLE_SCENARIOS),
         "unsupported_scenarios": UNSUPPORTED_SCENARIOS,
+        "entities": (
+            "Account head and semantic group always; approved expense category (from the categorization "
+            "pipeline) as a fallback cohort for heads with too little history; vendor, employee and approver "
+            "the day the ledger carries those columns"
+        ),
         "calibration": _requirements(),
     }
 

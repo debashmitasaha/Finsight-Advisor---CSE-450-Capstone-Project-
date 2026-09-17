@@ -121,11 +121,30 @@ def _data_quality(frame: pd.DataFrame, config: EngineConfig) -> dict:
             f"{config.min_vouchers_for_rarity}."
         )
 
+    # Approved expense categories give thin account heads a cleaner, larger cohort. They
+    # arrive from the categorization pipeline one approval at a time, so say how far along
+    # that is rather than let "no category signals" read as "nothing to find".
+    category_coverage = 0.0
+    if "entity_expense_category" in frame.columns:
+        category_coverage = float((frame["entity_expense_category"].astype(str).str.len() > 0).mean())
+    if category_coverage == 0:
+        warnings.append(
+            "No expense categories are assigned yet, so every row is judged against its account head alone. "
+            "Approving categories in the Expense Category Review panel gives new or rarely used heads a "
+            "cleaner cohort to be compared with."
+        )
+    elif category_coverage < 0.5:
+        warnings.append(
+            f"Only {category_coverage:.0%} of rows carry an approved expense category; the rest fall back to "
+            "account-head baselines alone."
+        )
+
     return {
         "grouping_ratio": round(ratio, 3),
         "zero_amount_share": round(zero_share, 3),
         "ledger_span_days": int(span),
         "distinct_vouchers": int(vouchers),
+        "expense_category_coverage": round(category_coverage, 3),
         "warnings": warnings,
     }
 

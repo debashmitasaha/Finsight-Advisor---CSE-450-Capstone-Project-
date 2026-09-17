@@ -8,12 +8,15 @@ import pandas as pd
 from app.forensic_engine.config import EngineConfig
 
 
-# Columns the engine will use as an "entity" when the ledger carries them. The first four
-# are always derivable from the current upload pipeline; vendor/employee/approver light up
-# automatically the day those columns exist in the source spreadsheet.
+# Columns the engine will use as an "entity" when the ledger carries them. Account head and
+# semantic group are always derivable from the upload pipeline. Expense category comes from
+# the categorization pipeline (a Gemini suggestion an admin approved) and is populated only
+# for rows whose group has an approved category, so it lights up as reviewers approve.
+# Vendor/employee/approver light up the day those columns exist in the source spreadsheet.
 ENTITY_COLUMNS: tuple[tuple[str, str], ...] = (
     ("account_head", "entity_account_head"),
     ("account_group", "entity_account_group"),
+    ("expense_category", "entity_expense_category"),
     ("vendor", "entity_vendor"),
     ("employee", "entity_employee"),
     ("approver", "entity_approver"),
@@ -82,6 +85,7 @@ def build_frame(transactions: list) -> pd.DataFrame:
                 "chart_acc_head": txn.chart_acc_head or "",
                 "entity_account_head": (txn.cleaned_chart_acc_head or txn.chart_acc_head or "unmapped").strip().lower(),
                 "entity_account_group": (txn.group_name or "ungrouped").strip().lower(),
+                "entity_expense_category": _category_name(txn),
                 "entity_vendor": _optional(txn, "vendor_name"),
                 "entity_employee": _optional(txn, "created_by_name"),
                 "entity_approver": _optional(txn, "approver_name"),
@@ -109,6 +113,18 @@ def build_frame(transactions: list) -> pd.DataFrame:
 def _optional(txn, attribute: str) -> str:
     value = getattr(txn, attribute, None)
     return str(value).strip().lower() if value else ""
+
+
+def _category_name(txn) -> str:
+    """The approved expense category on a row, or "" when none has been assigned.
+
+    Read from the ORM relationship when it is there, and from a plain
+    `expense_category_name` attribute otherwise, so frames built outside the database
+    (tests, benchmarks) carry categories the same way.
+    """
+    category = getattr(txn, "expense_category", None)
+    name = getattr(category, "name", None) if category is not None else getattr(txn, "expense_category_name", None)
+    return str(name).strip().lower() if name else ""
 
 
 def active_entity_kinds(frame: pd.DataFrame) -> list[tuple[str, str]]:
@@ -227,19 +243,17 @@ def ensemble_feature_matrix(frame: pd.DataFrame, baselines: dict[str, dict[str, 
     gap_days = frame.groupby("entity_account_head")["transaction_date"].diff().dt.days.fillna(0).to_numpy(dtype=float)
     head_frequency = frame.groupby("entity_account_head")["transaction_id"].transform("count").to_numpy(dtype=float)
 
-    matrix = np.column_stack(
-        [
-            log_amount,
-            np.clip(head_z, 0, 25),
-            np.clip(group_z, 0, 25),
-            np.log1p(np.clip(head_ratio, 0, 500)),
-            np.clip(gap_days, 0, 400),
-            np.log1p(head_frequency),
-            frame["is_weekend"].to_numpy(dtype=float),
-            frame["is_month_end"].to_numpy(dtype=float),
-            np.array([1.0 if is_round(a, 10_000) else 0.0 for a in frame["amount"]], dtype=float),
-        ]
-    )
+    columns = [
+        log_amount,
+        np.clip(head_z, 0, 25),
+        np.clip(group_z, 0, 25),
+        np.log1p(np.clip(head_ratio, 0, 500)),
+        np.clip(gap_days, 0, 400),
+        np.log1p(head_frequency),
+        frame["is_weekend"].to_numpy(dtype=float),
+        frame["is_month_end"].to_numpy(dtype=float),
+        np.array([1.0 if is_round(a, 10_000) else 0.0 for a in frame["amount"]], dtype=float),
+    ]
     names = [
         "log_amount",
         "head_robust_z",
@@ -251,4 +265,21 @@ def ensemble_feature_matrix(frame: pd.DataFrame, baselines: dict[str, dict[str, 
         "is_month_end",
         "is_round_10k",
     ]
+
+    # The approved expense category is a coarser cohort than the head, but it exists for
+    # heads too new to have a baseline of their own. Added only when categories are actually
+    # assigned, so a ledger without them produces exactly the feature vector it always did.
+    category_baselines = baselines.get("expense_category", {})
+    if category_baselines and "entity_expense_category" in frame.columns:
+        category_z = np.array(
+            [
+                category_baselines[key].robust_z(amount) if key in category_baselines else 0.0
+                for key, amount in zip(frame["entity_expense_category"], frame["amount"])
+            ],
+            dtype=float,
+        )
+        columns.append(np.clip(category_z, 0, 25))
+        names.append("category_robust_z")
+
+    matrix = np.column_stack(columns)
     return np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0), names

@@ -235,6 +235,7 @@ export interface EngineDataQuality {
   zero_amount_share: number;
   ledger_span_days: number;
   distinct_vouchers: number;
+  expense_category_coverage?: number;
   warnings: string[];
 }
 
