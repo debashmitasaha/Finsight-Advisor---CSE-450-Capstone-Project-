@@ -186,7 +186,9 @@ create table if not exists public.forensic_run (
   department_id uuid references public.department(department_id) on delete set null,
   rows_analysed integer not null default 0,
   findings_stored integer not null default 0,
+  alerts_stored integer not null default 0,
   min_report_score numeric(6, 2) not null default 65,
+  threshold_source text,
   diagnostics jsonb not null default '{}',
   summary jsonb not null default '{}',
   created_at timestamptz not null default now()
@@ -203,8 +205,79 @@ create table if not exists public.forensic_finding (
   views_triggered jsonb not null default '[]',
   view_scores jsonb not null default '{}',
   evidence jsonb not null default '[]',
+  is_alert boolean not null default true,
   is_resolved boolean not null default false,
   resolution_note text,
+  created_at timestamptz not null default now()
+);
+
+-- Reviewer ground truth: one verdict per (company, transaction). Re-reviewing overwrites.
+create table if not exists public.forensic_review (
+  review_id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.company(company_id) on delete cascade,
+  department_id uuid references public.department(department_id) on delete set null,
+  transaction_id uuid not null references public.transaction(transaction_id) on delete cascade,
+  finding_id uuid references public.forensic_finding(finding_id) on delete set null,
+  reviewer_id uuid references public.users(user_id) on delete set null,
+  label text not null check (label in ('confirmed', 'cleared', 'uncertain')),
+  review_note text,
+  review_source text not null default 'alert',
+  risk_score_at_review numeric(6, 2) not null default 0,
+  threshold_at_review numeric(6, 2) not null default 0,
+  engine_version text not null default '',
+  reviewed_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  constraint forensic_review_company_txn_key unique (company_id, transaction_id)
+);
+
+-- Where each company's alert line sits and why. No row = bootstrap.
+create table if not exists public.company_forensic_config (
+  company_id uuid primary key references public.company(company_id) on delete cascade,
+  calibration_mode text not null default 'bootstrap' check (calibration_mode in ('bootstrap', 'warmup', 'calibrated')),
+  active_threshold numeric(6, 2),
+  threshold_source text not null default 'bootstrap',
+  candidate_threshold numeric(6, 2),
+  candidate_status text,
+  precision numeric(6, 4),
+  recall numeric(6, 4),
+  f1 numeric(6, 4),
+  false_positive_rate numeric(6, 4),
+  reviewed_count integer not null default 0,
+  positive_count integer not null default 0,
+  negative_count integer not null default 0,
+  uncertain_count integer not null default 0,
+  reviews_at_last_calibration integer not null default 0,
+  calibrated_at timestamptz,
+  updated_at timestamptz not null default now(),
+  engine_version text
+);
+
+-- Append-only audit trail of every calibration attempt, activated or rejected.
+create table if not exists public.threshold_calibration_history (
+  calibration_id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.company(company_id) on delete cascade,
+  old_threshold numeric(6, 2) not null,
+  candidate_threshold numeric(6, 2) not null,
+  activated_threshold numeric(6, 2),
+  outcome text not null check (outcome in ('activated', 'rejected')),
+  reason text not null default '',
+  triggered_by text not null default 'manual',
+  precision numeric(6, 4),
+  recall numeric(6, 4),
+  f1 numeric(6, 4),
+  false_positive_rate numeric(6, 4),
+  calibration_f1 numeric(6, 4),
+  review_count integer not null default 0,
+  positive_count integer not null default 0,
+  negative_count integer not null default 0,
+  calibration_rows integer not null default 0,
+  validation_rows integer not null default 0,
+  calibration_data_start timestamptz,
+  calibration_data_end timestamptz,
+  sweep jsonb not null default '[]',
+  checks jsonb not null default '[]',
+  metrics jsonb not null default '{}',
+  engine_version text not null default '',
   created_at timestamptz not null default now()
 );
 
@@ -230,6 +303,10 @@ create index if not exists idx_forensic_run_dept on public.forensic_run(departme
 create index if not exists idx_forensic_finding_dept on public.forensic_finding(department_id);
 create index if not exists idx_forensic_finding_run on public.forensic_finding(run_id);
 create index if not exists idx_forensic_finding_txn on public.forensic_finding(transaction_id);
+create index if not exists idx_forensic_review_company on public.forensic_review(company_id);
+create index if not exists idx_forensic_review_dept on public.forensic_review(department_id);
+create index if not exists idx_forensic_review_txn on public.forensic_review(transaction_id);
+create index if not exists idx_threshold_calibration_company on public.threshold_calibration_history(company_id);
 
 create or replace function public.handle_updated_at()
 returns trigger language plpgsql as $$

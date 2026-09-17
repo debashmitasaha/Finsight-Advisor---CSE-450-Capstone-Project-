@@ -23,6 +23,9 @@ class EvaluationReport:
     median_rank_of_planted: float | None
     per_scenario: dict[str, dict]
     threshold: float
+    pre_existing_flagged: int = 0
+    """Rows the engine was already reporting before any fraud was planted. Set aside from
+    the false-positive count and reported separately so the exclusion stays visible."""
 
     def to_dict(self) -> dict:
         return {
@@ -40,6 +43,7 @@ class EvaluationReport:
             "top_k_precision": self.top_k_precision,
             "mean_rank_of_planted": self.mean_rank_of_planted,
             "median_rank_of_planted": self.median_rank_of_planted,
+            "pre_existing_flagged": self.pre_existing_flagged,
             "per_scenario": self.per_scenario,
         }
 
@@ -49,6 +53,7 @@ def evaluate(
     injection: InjectionResult,
     total_rows: int,
     threshold: float = 40.0,
+    baseline_flagged: set[str] | None = None,
 ) -> EvaluationReport:
     """Score the engine against ground truth we planted ourselves.
 
@@ -56,22 +61,40 @@ def evaluate(
     everything above 40, what do we get". The ranking metrics answer "if an auditor works
     down the list, how far must they read" — which is closer to how the tool is actually
     used, and is why mean rank is reported alongside precision.
+
+    `baseline_flagged` is what the engine already reported on the *un-injected* ledger.
+    Those rows are set aside rather than counted as mistakes, because they are not errors
+    the injection caused: the engine was flagging them before a single fraudulent row was
+    planted. Without this the measurement silently punishes the engine for every genuine
+    anomaly the ledger already contained — and collapses entirely on a ledger that was
+    seeded with fraud beforehand, where the engine is penalised precisely for being right.
     """
     planted = injection.planted_ids
+    baseline = set(baseline_flagged or ())
+    # A planted row can never be "pre-existing" — planted ids are new rows by construction.
+    baseline -= planted
+
     scored = {finding.transaction_id: finding for finding in findings}
 
-    flagged = {finding.transaction_id for finding in findings if finding.risk_score >= threshold}
+    flagged_all = {finding.transaction_id for finding in findings if finding.risk_score >= threshold}
+    pre_existing = flagged_all & baseline
+    flagged = flagged_all - pre_existing
+
     true_positives = flagged & planted
     false_positives = flagged - planted
     false_negatives = planted - flagged
 
-    clean_rows = max(total_rows - len(planted), 1)
+    # Rows that could legitimately be called a false positive: the untouched ledger minus
+    # the rows already under suspicion before the injection.
+    clean_rows = max(total_rows - len(planted) - len(pre_existing), 1)
     precision = len(true_positives) / len(flagged) if flagged else 0.0
     recall = len(true_positives) / len(planted) if planted else 0.0
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
 
-    # Ranking view: every row the engine scored, best first. Unscored rows rank last.
-    ranked = [finding.transaction_id for finding in findings]
+    # Ranking view: every row the engine scored, best first, excluding rows that were
+    # already being reported before the injection so the ranking answers "how high did the
+    # newly introduced fraud land". Unscored rows rank last.
+    ranked = [finding.transaction_id for finding in findings if finding.transaction_id not in baseline]
     rank_of = {tid: index + 1 for index, tid in enumerate(ranked)}
     unscored_rank = len(ranked) + 1
 
@@ -124,6 +147,7 @@ def evaluate(
         median_rank_of_planted=median_rank,
         per_scenario=per_scenario,
         threshold=threshold,
+        pre_existing_flagged=len(pre_existing),
     )
 
 
@@ -132,6 +156,7 @@ def sweep_thresholds(
     injection: InjectionResult,
     total_rows: int,
     thresholds: tuple[float, ...] = (20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0),
+    baseline_flagged: set[str] | None = None,
 ) -> list[dict]:
     """Precision/recall trade-off across alert thresholds.
 
@@ -141,7 +166,7 @@ def sweep_thresholds(
     """
     curve = []
     for threshold in thresholds:
-        report = evaluate(findings, injection, total_rows, threshold)
+        report = evaluate(findings, injection, total_rows, threshold, baseline_flagged)
         curve.append(
             {
                 "threshold": threshold,

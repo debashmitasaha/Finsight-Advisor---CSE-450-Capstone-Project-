@@ -182,6 +182,9 @@ def sync_postgres_schema() -> None:
         text('ALTER TABLE IF EXISTS anomaly ADD COLUMN IF NOT EXISTS is_resolved BOOLEAN NOT NULL DEFAULT FALSE'),
         text('ALTER TABLE IF EXISTS anomaly ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()'),
         text('ALTER TABLE IF EXISTS anomaly ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()'),
+        text('ALTER TABLE IF EXISTS forensic_finding ADD COLUMN IF NOT EXISTS is_alert BOOLEAN NOT NULL DEFAULT TRUE'),
+        text('ALTER TABLE IF EXISTS forensic_run ADD COLUMN IF NOT EXISTS alerts_stored INTEGER NOT NULL DEFAULT 0'),
+        text('ALTER TABLE IF EXISTS forensic_run ADD COLUMN IF NOT EXISTS threshold_source TEXT'),
         text('CREATE INDEX IF NOT EXISTS idx_expense_category_company ON expense_category(company_id)'),
         text('CREATE INDEX IF NOT EXISTS idx_expense_category_department ON expense_category(department_id)'),
         text('CREATE INDEX IF NOT EXISTS idx_group_expense_category ON "group"(expense_category_id)'),
@@ -216,10 +219,19 @@ def sync_sqlite_schema() -> None:
             "suggested_category_source": "TEXT",
             "suggested_category_payload": "JSON",
         },
+        "forensic_finding": {
+            "is_alert": "BOOLEAN NOT NULL DEFAULT 1",
+        },
+        "forensic_run": {
+            "alerts_stored": "INTEGER NOT NULL DEFAULT 0",
+            "threshold_source": "TEXT",
+        },
     }
 
     with engine.begin() as conn:
         for table_name, columns in table_columns.items():
+            if not sqlite_table_exists(conn, table_name):
+                continue
             existing_columns = {
                 row[1]
                 for row in conn.execute(text(f'PRAGMA table_info("{table_name}")')).fetchall()

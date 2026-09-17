@@ -224,8 +224,10 @@ export interface EngineFinding {
   views_triggered: ForensicView[];
   view_scores: Partial<Record<ForensicView, number>>;
   evidence: EvidenceItem[];
+  is_alert?: boolean;
   is_resolved?: boolean;
   created_at?: string;
+  review?: ReviewRecord | null;
 }
 
 export interface EngineDataQuality {
@@ -262,7 +264,9 @@ export interface EngineAnalyzeResponse {
   summary: EngineSummary;
   diagnostics: EngineDiagnostics;
   reported: number;
+  scored_total?: number;
   min_report_score: number;
+  threshold?: ThresholdInfo;
   findings: EngineFinding[];
   message?: string;
 }
@@ -299,6 +303,7 @@ export interface BenchmarkMetrics {
   top_k_precision: Record<string, number>;
   mean_rank_of_planted: number | null;
   median_rank_of_planted: number | null;
+  pre_existing_flagged: number;
   per_scenario: Record<string, ScenarioResult>;
 }
 
@@ -316,34 +321,222 @@ export interface BenchmarkResponse {
   planted_cases: { scenario: string; rows: number; description: string; detail: Record<string, unknown> }[];
   metrics: BenchmarkMetrics;
   threshold_curve: ThresholdPoint[];
-  clean_ledger: { rows: number; scored: number; bands: Record<RiskBand, number> };
+  clean_ledger: { rows: number; scored: number; bands: Record<RiskBand, number>; already_flagged?: number };
   injected_ledger: { rows: number; scored: number; bands: Record<RiskBand, number> };
   scenarios_available: string[];
   scenarios_unsupported: Record<string, string>;
   data_quality: EngineDataQuality;
   seed: number;
+  synthetic?: boolean;
+  scope_note?: string;
+}
+
+export interface TransactionSummary {
+  transaction_id: string;
+  transaction_date: string;
+  amount: number;
+  transaction_type?: string;
+  description: string | null;
+  chart_acc_head: string | null;
+  group_name: string | null;
+  invoice_id: string | null;
+  po_number: string | null;
+  payment_method: string | null;
+  approval_status: string;
 }
 
 export interface EngineCaseReport {
   finding_id: string;
   risk_score: number;
   band: RiskBand;
+  is_alert?: boolean;
   headline: string;
-  transaction: {
-    transaction_id: string;
-    transaction_date: string;
-    amount: number;
-    description: string | null;
-    chart_acc_head: string | null;
-    group_name: string | null;
-    invoice_id: string | null;
-    po_number: string | null;
-    payment_method: string | null;
-    approval_status: string;
-  } | null;
+  transaction: TransactionSummary | null;
   view_scores: Partial<Record<ForensicView, number>>;
   why_flagged: string[];
   evidence: EvidenceItem[];
   is_resolved: boolean;
   resolution_note: string | null;
+  review?: ReviewRecord | null;
+}
+
+// --- Company-specific adaptive alert threshold ---
+//
+// The engine scores every transaction 0-100. Whether a score *alerts* is decided per
+// company: a bootstrap threshold until that company has enough reviewer ground truth,
+// then a threshold chosen by F1 on its own labels and validated on held-out labels.
+
+export type CalibrationMode = 'bootstrap' | 'warmup' | 'calibrated';
+export type ThresholdSource = 'bootstrap' | 'company_f1' | 'manual';
+export type ReviewLabel = 'confirmed' | 'cleared' | 'uncertain';
+export type ReviewSource = 'alert' | 'sample';
+export type ReviewStratum = 'priority' | 'alert' | 'near_miss' | 'low';
+
+export interface ThresholdInfo {
+  value: number;
+  source: ThresholdSource;
+  label: string;
+  mode: CalibrationMode;
+  company_id?: string;
+  company_name?: string;
+}
+
+export interface ReviewRecord {
+  review_id: string;
+  transaction_id: string;
+  finding_id: string | null;
+  label: ReviewLabel;
+  note: string | null;
+  source: ReviewSource;
+  risk_score_at_review: number;
+  threshold_at_review: number;
+  engine_version: string;
+  reviewed_at: string | null;
+  reviewer: string | null;
+}
+
+export interface ConfusionMetrics {
+  threshold: number;
+  rows: number;
+  true_positives: number;
+  false_positives: number;
+  true_negatives: number;
+  false_negatives: number;
+  precision: number;
+  recall: number;
+  f1: number;
+  false_positive_rate: number;
+  alerts: number;
+}
+
+export interface ReadinessCheck {
+  code: string;
+  label: string;
+  required: number;
+  actual: number;
+  passed: boolean;
+}
+
+export interface ValidationCheck {
+  code: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface CalibrationRecord {
+  calibration_id: string;
+  created_at: string | null;
+  triggered_by: 'auto' | 'manual';
+  outcome: 'activated' | 'rejected';
+  reason: string;
+  old_threshold: number;
+  candidate_threshold: number;
+  activated_threshold: number | null;
+  validation: ConfusionMetrics | null;
+  calibration: ConfusionMetrics | null;
+  current_validation: ConfusionMetrics | null;
+  review_count: number;
+  positive_count: number;
+  negative_count: number;
+  calibration_rows: number;
+  validation_rows: number;
+  calibration_data_start: string | null;
+  calibration_data_end: string | null;
+  sweep: ConfusionMetrics[];
+  checks: ValidationCheck[];
+  engine_version: string;
+}
+
+export interface CalibrationRequirements {
+  bootstrap_threshold: number;
+  min_reviewed_rows: number;
+  min_positive_labels: number;
+  min_negative_labels: number;
+  calibration_share: number;
+  candidate_thresholds: number[];
+  min_validation_positive: number;
+  min_validation_negative: number;
+  max_validation_drop: number;
+  recalibration_batch: number;
+}
+
+export interface CalibrationStatus {
+  company: { company_id: string; company_name: string } | null;
+  department: { department_id: string; department_name: string };
+  engine_version: string;
+  mode: CalibrationMode;
+  threshold: ThresholdInfo;
+  bootstrap_threshold: number;
+  counts: { reviewed: number; confirmed: number; cleared: number; uncertain: number; usable: number };
+  readiness: { ready: boolean; checks: ReadinessCheck[] };
+  requirements: CalibrationRequirements;
+  sampling: {
+    near_miss_share: number;
+    sample_rate_near: number;
+    sample_rate_low: number;
+    sample_min_near: number;
+    sample_min_low: number;
+    priority_score: number;
+  };
+  recalibration: { reviews_since_last: number; batch: number; due: boolean; ever_calibrated: boolean };
+  active_metrics: { precision: number; recall: number; f1: number; false_positive_rate: number } | null;
+  calibrated_at: string | null;
+  candidate: { threshold: number; status: 'activated' | 'rejected' | null } | null;
+  last_calibration: CalibrationRecord | null;
+  history: CalibrationRecord[];
+  status_text: string;
+  explanation: string;
+  not_happening: string[];
+}
+
+export interface CalibrationRunResponse {
+  ready: boolean;
+  activated: boolean;
+  reason: string;
+  outcome: Record<string, unknown>;
+  record: CalibrationRecord | null;
+  status: CalibrationStatus;
+}
+
+export interface ReviewStratumSummary {
+  population: number;
+  sampled: number;
+  rate: number | null;
+  label: string;
+  why: string;
+}
+
+export interface ReviewQueueItem {
+  transaction_id: string;
+  finding_id: string | null;
+  risk_score: number;
+  band: RiskBand;
+  stratum: ReviewStratum;
+  stratum_label: string;
+  transaction: TransactionSummary;
+  top_evidence: string | null;
+  views_triggered: ForensicView[];
+  corroboration: number;
+  review: ReviewRecord | null;
+}
+
+export interface ReviewQueue {
+  run_id: string | null;
+  run_at: string | null;
+  run_threshold: number | null;
+  threshold: ThresholdInfo;
+  items: ReviewQueueItem[];
+  strata: Partial<Record<ReviewStratum, ReviewStratumSummary>>;
+  pending: number;
+  reviewed: number;
+  message?: string;
+}
+
+export interface ReviewResponse {
+  success: boolean;
+  review: ReviewRecord;
+  calibration_triggered: boolean;
+  calibration: CalibrationRecord | null;
+  status: CalibrationStatus;
 }

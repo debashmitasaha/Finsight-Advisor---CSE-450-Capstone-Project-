@@ -1,10 +1,16 @@
 import {
   AdminOverview,
   BenchmarkResponse,
+  CalibrationRunResponse,
+  CalibrationStatus,
   EngineAnalyzeResponse,
   EngineCapabilities,
   EngineCaseReport,
   EngineFinding,
+  ReviewLabel,
+  ReviewQueue,
+  ReviewResponse,
+  ReviewSource,
   Anomaly,
   Company,
   Department,
@@ -154,15 +160,18 @@ export const api = {
   // --- Forensic Intelligence Engine ---
   engineCapabilities: (deptId?: string) =>
     request<EngineCapabilities>(`/forensic-engine/capabilities${deptId ? `?dept_id=${encodeURIComponent(deptId)}` : ''}`),
-  engineAnalyze: (deptId: string, minReportScore = 60) =>
+  // Leave `minReportScore` undefined (the normal case) and the run alerts at the company's
+  // active threshold: bootstrap until it has calibrated, its own validated threshold after.
+  engineAnalyze: (deptId: string, minReportScore?: number) =>
     request<EngineAnalyzeResponse>('/forensic-engine/analyze', {
       method: 'POST',
-      body: JSON.stringify({ dept_id: deptId, min_report_score: minReportScore }),
+      body: JSON.stringify({ dept_id: deptId, min_report_score: minReportScore ?? null }),
     }),
-  engineFindings: (deptId: string, options: { band?: string; minScore?: number } = {}) => {
+  engineFindings: (deptId: string, options: { band?: string; minScore?: number; alertsOnly?: boolean } = {}) => {
     const params = new URLSearchParams();
     if (options.band) params.set('band', options.band);
     if (options.minScore) params.set('min_score', String(options.minScore));
+    if (options.alertsOnly === false) params.set('alerts_only', 'false');
     const query = params.toString();
     return request<EngineFinding[]>(`/forensic-engine/dept/${deptId}/findings${query ? `?${query}` : ''}`);
   },
@@ -176,5 +185,37 @@ export const api = {
     request<BenchmarkResponse>('/forensic-engine/benchmark', {
       method: 'POST',
       body: JSON.stringify({ dept_id: deptId, threshold }),
+    }),
+
+  // --- Company-specific alert threshold calibration ---
+  engineCalibration: (deptId: string) => request<CalibrationStatus>(`/forensic-engine/dept/${deptId}/calibration`),
+  engineCalibrate: (deptId: string) =>
+    request<CalibrationRunResponse>('/forensic-engine/calibrate', {
+      method: 'POST',
+      body: JSON.stringify({ dept_id: deptId }),
+    }),
+  engineReviewQueue: (deptId: string) => request<ReviewQueue>(`/forensic-engine/dept/${deptId}/review-queue`),
+  engineSubmitReview: (payload: {
+    dept_id: string;
+    transaction_id: string;
+    label: ReviewLabel;
+    note?: string | null;
+    finding_id?: string | null;
+    source?: ReviewSource;
+  }) =>
+    request<ReviewResponse>('/forensic-engine/review', {
+      method: 'POST',
+      body: JSON.stringify({
+        dept_id: payload.dept_id,
+        transaction_id: payload.transaction_id,
+        label: payload.label,
+        note: payload.note ?? null,
+        finding_id: payload.finding_id ?? null,
+        source: payload.source ?? 'alert',
+      }),
+    }),
+  engineDeleteReview: (reviewId: string) =>
+    request<{ success: boolean; review_id: string; status: CalibrationStatus | null }>(`/forensic-engine/review/${reviewId}`, {
+      method: 'DELETE',
     }),
 };

@@ -32,13 +32,28 @@ def run_benchmark(
     injection = inject(baseline_frame, scenarios, seed=seed, approval_limit=approval_limit)
     injected_result = analyse_frame(injection.frame, config)
 
+    # What the engine already reported before anything was planted. Scored at the lowest
+    # threshold on the curve so a row cannot slip past the exclusion just because this run
+    # is being evaluated at a stricter cut-off than the one that first surfaced it.
+    baseline_flagged = {
+        finding.transaction_id
+        for finding in clean_result.findings
+        if finding.risk_score >= min(threshold, 20.0)
+    }
+
     report = evaluate(
         injected_result.findings,
         injection,
         total_rows=len(injection.frame),
         threshold=threshold,
+        baseline_flagged=baseline_flagged,
     )
-    curve = sweep_thresholds(injected_result.findings, injection, total_rows=len(injection.frame))
+    curve = sweep_thresholds(
+        injected_result.findings,
+        injection,
+        total_rows=len(injection.frame),
+        baseline_flagged=baseline_flagged,
+    )
 
     return {
         "injection": injection.summary(),
@@ -57,6 +72,7 @@ def run_benchmark(
             "rows": int(len(baseline_frame)),
             "scored": clean_result.summary.get("total_scored", 0),
             "bands": clean_result.summary.get("bands", {}),
+            "already_flagged": len(baseline_flagged),
         },
         "injected_ledger": {
             "rows": int(len(injection.frame)),
