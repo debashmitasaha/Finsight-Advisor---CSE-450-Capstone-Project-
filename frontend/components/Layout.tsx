@@ -39,6 +39,7 @@ interface NotificationItem {
 const Layout: React.FC<LayoutProps> = ({ user, onLogout, children, activePath, onNavigate }) => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const notificationRef = useRef<HTMLDivElement>(null);
 
   const [notifications, setNotifications] = useState<NotificationItem[]>([
@@ -71,23 +72,6 @@ const Layout: React.FC<LayoutProps> = ({ user, onLogout, children, activePath, o
     }
   ]);
 
-  // Simulate a live notification arriving after 5 seconds for demo purposes
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      const newNotif: NotificationItem = {
-        id: Date.now().toString(),
-        title: 'System Optimization',
-        description: 'AI detected 3 unused SaaS licenses in Sales unit.',
-        time: 'Just now',
-        type: 'info',
-        isRead: false,
-        targetPath: user.account_type === UserRole.EMPLOYEE ? '/analysis' : '/reports'
-      };
-      setNotifications(prev => [newNotif, ...prev]);
-    }, 8000);
-    return () => clearTimeout(timer);
-  }, [user.account_type]);
-
   // Handle click outside to close notifications
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -100,6 +84,10 @@ const Layout: React.FC<LayoutProps> = ({ user, onLogout, children, activePath, o
   }, []);
 
   const menuItems = SIDEBAR_ITEMS[user.account_type];
+  const visibleMenuItems = searchQuery.trim()
+    ? menuItems.filter((item) => item.name.toLowerCase().includes(searchQuery.trim().toLowerCase()))
+    : menuItems;
+  const activityPath = menuItems.find((item) => /history|audit/i.test(item.name))?.path || menuItems[0]?.path;
   const unreadCount = notifications.filter(n => !n.isRead).length;
 
   const roleLabels = {
@@ -154,15 +142,18 @@ const Layout: React.FC<LayoutProps> = ({ user, onLogout, children, activePath, o
         </div>
 
         <nav className="p-4 space-y-2">
-          {menuItems.map((item) => {
+          {!visibleMenuItems.length && (
+            <p className="px-4 py-3 text-xs font-semibold text-slate-500">No menu items match "{searchQuery}".</p>
+          )}
+          {visibleMenuItems.map((item) => {
             const isActive = activePath === item.path;
             return (
               <button
                 key={item.name}
                 onClick={() => onNavigate?.(item.path)}
                 className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl transition-all group ${
-                  isActive 
-                  ? 'bg-[#2f67ec] text-white shadow-[0_18px_35px_rgba(47,103,236,0.32)]' 
+                  isActive
+                  ? 'bg-[#2f67ec] text-white shadow-[0_18px_35px_rgba(47,103,236,0.32)]'
                   : 'text-slate-300 hover:text-white hover:bg-white/5'
                 }`}
               >
@@ -195,9 +186,11 @@ const Layout: React.FC<LayoutProps> = ({ user, onLogout, children, activePath, o
               </button>
               <div className="hidden md:flex items-center bg-white rounded-2xl px-4 py-3 w-64 lg:w-[420px] border border-slate-200 shadow-[0_12px_28px_rgba(15,23,42,0.05)] focus-within:ring-2 focus-within:ring-blue-500 transition-all">
                 <Search size={18} className="text-slate-400" />
-                <input 
-                  type="text" 
-                  placeholder="Search dashboard..." 
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search dashboard menu..."
                   className="bg-transparent border-none focus:ring-0 text-sm w-full ml-2 text-slate-700 placeholder-slate-400 font-medium"
                 />
               </div>
@@ -293,10 +286,16 @@ const Layout: React.FC<LayoutProps> = ({ user, onLogout, children, activePath, o
                     </div>
 
                     <div className="p-4 border-t border-slate-50 flex items-center justify-between bg-slate-50/30">
-                      <button className="text-[10px] font-black text-slate-400 hover:text-slate-600 transition-colors uppercase tracking-widest px-3 py-2">
+                      <button
+                        onClick={() => {
+                          setIsNotificationsOpen(false);
+                          if (activityPath && onNavigate) onNavigate(activityPath);
+                        }}
+                        className="text-[10px] font-black text-slate-400 hover:text-slate-600 transition-colors uppercase tracking-widest px-3 py-2"
+                      >
                         View all activity
                       </button>
-                      <button 
+                      <button
                         onClick={clearAllNotifications}
                         className="text-[10px] font-black text-red-400 hover:text-red-600 transition-colors uppercase tracking-widest px-3 py-2"
                       >

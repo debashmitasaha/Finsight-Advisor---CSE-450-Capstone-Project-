@@ -314,51 +314,77 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     }
   };
 
+  const handleAssignRole = async (userId: string, deptId: string, permissions: string[]) => {
+    try {
+      await api.assignRole(userId, deptId, permissions);
+      const refreshedUsers = await api.users();
+      setEmployees(refreshedUsers);
+      setStatus('Department access updated.');
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : 'Unable to update department access.');
+    }
+  };
+
   const triggerAction = async (action: 'group' | 'categorize' | 'forecast' | 'forensic') => {
     if (!selectedDeptId) return;
-    setStatus(`Running ${action}...`);
-    if (action === 'group') await api.runGrouping(selectedDeptId);
-    if (action === 'categorize') await api.runCategorization(selectedDeptId);
-    if (action === 'forecast') {
-      if (!isForecastSourceReady(sourceMode, selectedBatchId, dateFrom, dateTo)) {
-        setStatus(sourceMode === 'upload_batch' ? 'Select an upload batch first.' : 'Choose both start and end dates first.');
-        return;
-      }
-      const result = await api.runForecast(selectedDeptId, {
-        monthsAhead,
-        sourceMode,
-        uploadBatchId: selectedBatchId || null,
-        dateFrom: dateFrom || null,
-        dateTo: dateTo || null,
-      });
-      setForecasts(result.forecasts);
-      setForecastHistory(result.history);
-      setForecastDiagnostics(result.diagnostics);
-      setForecastModel(result.model);
-      setStatus('Budget forecast updated successfully.');
-      return;
-    }
     if (action === 'forensic') {
       await runForensicAnalysis();
       return;
     }
-    
-    await loadDepartmentData(selectedDeptId);
-    setStatus(`${action} completed successfully.`);
+    setStatus(`Running ${action}...`);
+    try {
+      if (action === 'group') await api.runGrouping(selectedDeptId);
+      if (action === 'categorize') await api.runCategorization(selectedDeptId);
+      if (action === 'forecast') {
+        if (!isForecastSourceReady(sourceMode, selectedBatchId, dateFrom, dateTo)) {
+          setStatus(sourceMode === 'upload_batch' ? 'Select an upload batch first.' : 'Choose both start and end dates first.');
+          return;
+        }
+        const result = await api.runForecast(selectedDeptId, {
+          monthsAhead,
+          sourceMode,
+          uploadBatchId: selectedBatchId || null,
+          dateFrom: dateFrom || null,
+          dateTo: dateTo || null,
+        });
+        setForecasts(result.forecasts);
+        setForecastHistory(result.history);
+        setForecastDiagnostics(result.diagnostics);
+        setForecastModel(result.model);
+        setStatus('Budget forecast updated successfully.');
+        return;
+      }
+
+      await loadDepartmentData(selectedDeptId);
+      setStatus(`${action} completed successfully.`);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : `Unable to run ${action}.`);
+    }
   };
 
   const handleUpload = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selectedDeptId || !file) return;
     setStatus('Uploading transactions...');
-    await api.uploadTransactions(selectedDeptId, file);
-    await loadDepartmentData(selectedDeptId);
-    setStatus('Upload complete.');
-    setFile(null);
+    try {
+      await api.uploadTransactions(selectedDeptId, file);
+      await loadDepartmentData(selectedDeptId);
+      setStatus('Upload complete.');
+      setFile(null);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : 'Unable to upload transactions.');
+    }
   };
 
   const actualSpend = useMemo(
     () => transactions.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0),
+    [transactions],
+  );
+
+  const unnecessarySpend = useMemo(
+    () => transactions
+      .filter((transaction) => transaction.category === 'unnecessary')
+      .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0),
     [transactions],
   );
 
@@ -418,7 +444,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     return departments.map((department) => ({
       name: department.department_name.split(' ').slice(0, 2).join(' '),
       budget: Number(department.annual_budget || 0),
-      spend: department.department_id === selectedDeptId ? Math.round(actualSpend) : Math.round(Number(department.annual_budget || 0) * 0.58),
+      spend: department.department_id === selectedDeptId
+        ? Math.round(actualSpend)
+        : Math.round(Number(department.used_budget_current_year || 0)),
     }));
   }, [departments, selectedDeptId, actualSpend]);
 
@@ -508,9 +536,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
 
         <CalloutCard
           tone="green"
-          eyebrow="AI Savings Potential"
-          title={`TK ${Math.max(14200, Math.round(projectedSpend * 0.08)).toLocaleString()}`}
-          description="Potential quarterly savings visible from unnecessary or duplicate spending patterns."
+          eyebrow="Unnecessary Spend"
+          title={`TK ${Math.round(unnecessarySpend).toLocaleString()}`}
+          description="Total of imported transactions currently categorized as unnecessary spend for this department."
           footer="Audit savings"
         />
       </div>
@@ -829,9 +857,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
 
         <CalloutCard
           tone="green"
-          eyebrow="Savings Potential"
-          title={`TK ${Math.round((categorizationSummary?.unnecessary || 0) * 1200 + anomalies.length * 450).toLocaleString()}`}
-          description="Potential reduction from unnecessary transactions and anomalies requiring remediation."
+          eyebrow="Unnecessary Spend"
+          title={`TK ${Math.round(unnecessarySpend).toLocaleString()}`}
+          description={`${categorizationSummary?.unnecessary || 0} transactions categorized as unnecessary, worth this much imported spend.`}
           footer="Audit savings"
         />
       </div>
@@ -970,23 +998,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       <HeroHeader
         eyebrow="Team Oversight"
         title="Employee Access Map"
-        description="A more polished roster view for company users and their operational access."
+        description="Assign department access so each employee only sees the departments they're scoped to."
         actionLabel="Employees"
       />
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
         {employees.map((employee) => (
-          <div key={employee.user_id} className={`${shellCard} p-6 bg-[radial-gradient(circle_at_top_right,_rgba(59,130,246,0.08),_transparent_38%),white]`}>
-            <div className="flex items-center justify-between">
-              <div className="h-12 w-12 rounded-2xl bg-slate-950 text-white flex items-center justify-center font-black">
-                {employee.name.charAt(0)}
-              </div>
-              <span className="rounded-full bg-blue-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] text-blue-700">
-                {employee.account_type}
-              </span>
-            </div>
-            <p className="mt-5 text-lg font-black text-slate-950">{employee.name}</p>
-            <p className="mt-1 text-sm text-slate-500">{employee.email}</p>
-          </div>
+          <EmployeeCard key={employee.user_id} employee={employee} departments={departments} onAssign={handleAssignRole} />
         ))}
       </div>
     </div>
@@ -1215,6 +1232,102 @@ const ForensicLawCard = ({ title, value, description }: { title: string; value: 
     </div>
   </div>
 );
+
+const PERMISSION_OPTIONS: { value: string; label: string }[] = [
+  { value: 'view_transactions', label: 'View Transactions' },
+  { value: 'run_analysis', label: 'Run Analysis' },
+  { value: 'manage_department', label: 'Manage Department' },
+];
+
+const EmployeeCard: React.FC<{
+  employee: UserAccount;
+  departments: Department[];
+  onAssign: (userId: string, deptId: string, permissions: string[]) => Promise<void>;
+}> = ({ employee, departments, onAssign }) => {
+  const [deptId, setDeptId] = useState(departments[0]?.department_id || '');
+  const [permissions, setPermissions] = useState<string[]>(['view_transactions']);
+  const [saving, setSaving] = useState(false);
+
+  const togglePermission = (value: string) => {
+    setPermissions((current) =>
+      current.includes(value) ? current.filter((permission) => permission !== value) : [...current, value],
+    );
+  };
+
+  const submit = async () => {
+    if (!deptId || !permissions.length) return;
+    setSaving(true);
+    try {
+      await onAssign(employee.user_id, deptId, permissions);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className={`${shellCard} p-6 bg-[radial-gradient(circle_at_top_right,_rgba(59,130,246,0.08),_transparent_38%),white]`}>
+      <div className="flex items-center justify-between">
+        <div className="h-12 w-12 rounded-2xl bg-slate-950 text-white flex items-center justify-center font-black">
+          {employee.name.charAt(0)}
+        </div>
+        <span className="rounded-full bg-blue-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] text-blue-700">
+          {employee.account_type}
+        </span>
+      </div>
+      <p className="mt-5 text-lg font-black text-slate-950">{employee.name}</p>
+      <p className="mt-1 text-sm text-slate-500">{employee.email}</p>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {employee.departments.length ? (
+          employee.departments.map((role) => (
+            <span key={role.department_id} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-bold text-slate-600">
+              {role.department_name || 'Department'} ({role.permissions.join(', ') || 'no permissions'})
+            </span>
+          ))
+        ) : (
+          <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-bold text-amber-700">
+            No department access assigned
+          </span>
+        )}
+      </div>
+
+      {Boolean(departments.length) && (
+        <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <label className="mb-2 block text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Assign Department Access</label>
+          <select
+            value={deptId}
+            onChange={(e) => setDeptId(e.target.value)}
+            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+          >
+            {departments.map((department) => (
+              <option key={department.department_id} value={department.department_id}>{department.department_name}</option>
+            ))}
+          </select>
+          <div className="mt-3 flex flex-wrap gap-3">
+            {PERMISSION_OPTIONS.map((option) => (
+              <label key={option.value} className="flex items-center gap-2 text-xs font-semibold text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={permissions.includes(option.value)}
+                  onChange={() => togglePermission(option.value)}
+                />
+                {option.label}
+              </label>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={saving || !deptId || !permissions.length}
+            className="mt-3 w-full rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+          >
+            {saving ? 'Saving...' : 'Assign Access'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
 
 const formatAnomalyType = (value: string) => {
   const normalized = value.toLowerCase();

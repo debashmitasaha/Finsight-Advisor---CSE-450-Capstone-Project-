@@ -75,6 +75,13 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
     [departments, selectedDeptId],
   );
 
+  const goToPreviousDepartment = () => {
+    if (departments.length < 2) return;
+    const currentIndex = departments.findIndex((department) => department.department_id === selectedDeptId);
+    const previousIndex = (currentIndex - 1 + departments.length) % departments.length;
+    setSelectedDeptId(departments[previousIndex].department_id);
+  };
+
   const annualBudget = Number(selectedDepartment?.annual_budget || 0);
   const orderedForecasts = useMemo(
     () => [...forecasts].sort((left, right) => left.forecast_period_start.localeCompare(right.forecast_period_start)),
@@ -109,7 +116,12 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
     <div className="space-y-8">
       <div className="flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between">
         <div className="flex items-start gap-4">
-          <button className="flex h-14 w-14 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 shadow-[0_12px_28px_rgba(15,23,42,0.05)]">
+          <button
+            onClick={goToPreviousDepartment}
+            disabled={departments.length < 2}
+            title={departments.length > 1 ? 'Switch to previous department' : undefined}
+            className="flex h-14 w-14 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 shadow-[0_12px_28px_rgba(15,23,42,0.05)] disabled:cursor-not-allowed disabled:opacity-40"
+          >
             <ChevronLeft size={24} />
           </button>
           <div>
