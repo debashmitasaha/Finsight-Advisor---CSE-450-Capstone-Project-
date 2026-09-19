@@ -6,7 +6,6 @@ import Logo from './Logo';
 import { 
   LogOut, 
   Bell, 
-  Search, 
   Menu, 
   X, 
   AlertCircle, 
@@ -193,14 +192,6 @@ const Layout: React.FC<LayoutProps> = ({ user, onLogout, children, activePath, o
               <button onClick={() => setIsSidebarOpen(true)} className="lg:hidden text-slate-600">
                 <Menu size={24} />
               </button>
-              <div className="hidden md:flex items-center bg-white rounded-2xl px-4 py-3 w-64 lg:w-[420px] border border-slate-200 shadow-[0_12px_28px_rgba(15,23,42,0.05)] focus-within:ring-2 focus-within:ring-blue-500 transition-all">
-                <Search size={18} className="text-slate-400" />
-                <input 
-                  type="text" 
-                  placeholder="Search dashboard..." 
-                  className="bg-transparent border-none focus:ring-0 text-sm w-full ml-2 text-slate-700 placeholder-slate-400 font-medium"
-                />
-              </div>
             </div>
 
             <div className="flex items-center gap-4">

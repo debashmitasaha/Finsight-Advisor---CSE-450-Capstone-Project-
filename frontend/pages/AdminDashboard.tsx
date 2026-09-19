@@ -1,11 +1,13 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
   ArrowUpRight,
   BarChart3,
+  Building2,
   Check,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   Clock,
   CircleDollarSign,
@@ -552,19 +554,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         description="A sharper operational workspace for budget oversight, forecast confidence, and risk visibility."
         actionLabel="Detailed PDF"
         actionContent={
-          <select
-            value={selectedDeptId}
-            onChange={(event) => setSelectedDeptId(event.target.value)}
-            disabled={!departments.length}
-            className="min-h-[56px] min-w-[220px] rounded-[22px] border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-700 shadow-[0_15px_40px_rgba(15,23,42,0.06)] outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
-            aria-label="Select department"
-          >
-            {departments.map((department) => (
-              <option key={department.department_id} value={department.department_id}>
-                {department.department_name}
-              </option>
-            ))}
-          </select>
+          <DepartmentPicker
+            departments={departments}
+            selectedId={selectedDeptId}
+            onSelect={setSelectedDeptId}
+          />
         }
       />
 
@@ -791,9 +785,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
               <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Annual Budget</label>
               <div className="flex flex-col gap-3 sm:flex-row">
                 <input
-                  type="number"
-                  min="0"
-                  max={MAX_ANNUAL_BUDGET}
+                  type="text"
+                  inputMode="decimal"
                   value={budgetDraft}
                   onChange={(event) => setBudgetDraft(event.target.value.replace(/[^\d.]/g, ''))}
                   className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700"
@@ -1365,6 +1358,102 @@ const HeroHeader = ({
     </div>
   </div>
 );
+
+const DepartmentPicker = ({
+  departments,
+  selectedId,
+  onSelect,
+}: {
+  departments: Department[];
+  selectedId: string;
+  onSelect: (departmentId: string) => void;
+}) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const selectedDepartment = departments.find((department) => department.department_id === selectedId);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsOpen(false);
+    };
+
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [isOpen]);
+
+  return (
+    <div ref={pickerRef} className="relative w-full sm:w-[290px]">
+      <button
+        type="button"
+        onClick={() => setIsOpen((open) => !open)}
+        disabled={!departments.length}
+        className={`group flex min-h-[64px] w-full items-center gap-3 rounded-2xl border bg-white px-3.5 py-2.5 text-left shadow-[0_15px_40px_rgba(15,23,42,0.07)] outline-none transition focus:ring-4 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 ${isOpen ? 'border-blue-300 ring-4 ring-blue-100' : 'border-slate-200 hover:border-blue-200 hover:bg-blue-50/30'}`}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        aria-controls="overview-department-menu"
+      >
+        <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition ${isOpen ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-600 group-hover:bg-blue-100'}`}>
+          <Building2 size={18} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[9px] font-black uppercase tracking-[0.16em] text-slate-400">Viewing department</span>
+          <span className="mt-0.5 block truncate text-sm font-black text-slate-800">
+            {selectedDepartment?.department_name || 'Choose department'}
+          </span>
+        </span>
+        <ChevronDown size={18} className={`shrink-0 text-slate-400 transition-transform duration-200 ${isOpen ? 'rotate-180 text-blue-600' : ''}`} />
+      </button>
+
+      {isOpen && (
+        <div
+          id="overview-department-menu"
+          role="listbox"
+          aria-label="Departments"
+          className="absolute right-0 top-full z-50 mt-2 w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_24px_60px_rgba(15,23,42,0.18)]"
+        >
+          <div className="border-b border-slate-100 bg-slate-50/80 px-4 py-3">
+            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Switch workspace</p>
+          </div>
+          <div className="max-h-72 space-y-1 overflow-y-auto p-2">
+            {departments.map((department) => {
+              const isSelected = department.department_id === selectedId;
+              return (
+                <button
+                  key={department.department_id}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  onClick={() => {
+                    onSelect(department.department_id);
+                    setIsOpen(false);
+                  }}
+                  className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition ${isSelected ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-700 hover:bg-blue-50 hover:text-blue-700'}`}
+                >
+                  <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${isSelected ? 'bg-white/15' : 'bg-slate-100 text-slate-500'}`}>
+                    <Building2 size={15} />
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-sm font-bold">{department.department_name}</span>
+                  {isSelected && <Check size={17} className="shrink-0" />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
 const EmployeeAccessSection = ({
   accounts,

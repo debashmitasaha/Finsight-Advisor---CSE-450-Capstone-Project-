@@ -452,8 +452,9 @@ def list_expense_categories(
 @router.get("/dept/{dept_id}/expense-groups")
 def get_expense_category_groups(dept_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     get_department(db, dept_id)
-    groups = ensure_groups_from_transactions(db, dept_id)
-    db.commit()
+    # This endpoint is read-only. Group creation belongs to the explicit
+    # Run Grouping action so uploads and dashboard refreshes stay fast.
+    groups = db.query(Group).filter(Group.dept_id == dept_id).all()
     return [
         serialize_expense_group(db, group)
         for group in sorted(groups, key=lambda item: float(item.group_no or 0))
