@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
+import uuid
 
 import pandas as pd
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -180,6 +181,18 @@ async def upload_transactions(
     db.add(batch)
     db.flush()
 
+    # Load existing hashes once. Checking Supabase once per Excel row makes
+    # large uploads slow because every duplicate check is a network round trip.
+    existing_hashes = {
+        dedupe_hash
+        for (dedupe_hash,) in db.query(Transaction.dedupe_hash)
+        .filter(
+            Transaction.department_id == dept_id,
+            Transaction.dedupe_hash.isnot(None),
+        )
+        .all()
+    }
+
     rows_processed = 0
     rows_failed = 0
     duplicate_rows = 0
@@ -209,11 +222,14 @@ async def upload_transactions(
                 invoice_id,
                 po_number,
             )
-            if db.query(Transaction).filter(Transaction.dedupe_hash == dedupe_hash).first():
+            if dedupe_hash in existing_hashes:
                 duplicate_rows += 1
                 continue
 
             txn = Transaction(
+                # Supplying the primary key avoids PostgreSQL/SQLAlchemy bulk
+                # insert sentinel mismatches when many transactions are uploaded.
+                transaction_id=uuid.uuid4(),
                 department_id=dept_id,
                 transaction_date=transaction_date,
                 amount=amount,
@@ -237,6 +253,7 @@ async def upload_transactions(
                 dedupe_hash=dedupe_hash,
             )
             db.add(txn)
+            existing_hashes.add(dedupe_hash)
             rows_processed += 1
         except Exception as exc:  # pragma: no cover - row-specific data issues
             rows_failed += 1
