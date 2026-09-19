@@ -8,7 +8,6 @@ import {
   ShieldAlert,
   Table2,
   Wallet,
-  Zap,
 } from 'lucide-react';
 import Layout from '../components/Layout';
 import LoadingState from '../components/LoadingState';
@@ -103,7 +102,6 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
     { path: '/departments', label: 'Overview', icon: LineChart },
     { path: '/history', label: 'Full Ledger', icon: Table2 },
     { path: '/analysis', label: 'Audit Hub', icon: Shield },
-    { path: '/projections', label: 'Projections', icon: Zap },
   ];
 
   const heroView = (
@@ -136,11 +134,11 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
           </select>
           <div className="inline-flex rounded-[28px] bg-slate-100 p-2 shadow-inner">
             {quickTabs.map(({ path, label, icon: Icon }) => {
-              const isActive = activePath === path || (path === '/projections' && activePath === '/departments');
+              const isActive = activePath === path;
               return (
                 <button
                   key={path}
-                  onClick={() => setActivePath(path === '/projections' ? '/departments' : path)}
+                  onClick={() => setActivePath(path)}
                   className={`inline-flex items-center gap-3 rounded-[22px] px-5 py-3 text-sm font-bold transition ${
                     isActive
                       ? 'bg-white text-[#2f67ec] shadow-[0_10px_25px_rgba(15,23,42,0.08)]'
