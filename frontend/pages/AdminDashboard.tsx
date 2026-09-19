@@ -7,6 +7,7 @@ import {
   CircleDollarSign,
   Eye,
   FileUp,
+  Radar,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
@@ -49,6 +50,7 @@ interface AdminDashboardProps {
 }
 
 const shellCard = 'rounded-[32px] border border-slate-200/80 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.06)]';
+type ForensicMode = 'rule' | 'engine';
 const MAX_ANNUAL_BUDGET = 9_999_999_999_999.99;
 
 const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
@@ -77,6 +79,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [forensicMonth, setForensicMonth] = useState('2022-08');
   const [forensicResult, setForensicResult] = useState<ForensicRunResponse | null>(null);
   const [selectedAnomaly, setSelectedAnomaly] = useState<Anomaly | null>(null);
+  const [forensicMode, setForensicMode] = useState<ForensicMode>('rule');
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -325,12 +328,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     }
   };
 
-  const triggerAction = async (action: 'group' | 'categorize' | 'forecast' | 'forensic') => {
+  const triggerAction = async (action: 'group' | 'categorize' | 'forecast') => {
     if (!selectedDeptId) return;
-    if (action === 'forensic') {
-      await runForensicAnalysis();
-      return;
-    }
     setStatus(`Running ${action}...`);
     try {
       if (action === 'group') await api.runGrouping(selectedDeptId);
@@ -470,7 +469,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         eyebrow="Executive Command"
         title={selectedDepartment ? `${selectedDepartment.department_name} Intelligence` : 'Executive Intelligence'}
         description="A sharper operational workspace for budget oversight, forecast confidence, and risk visibility."
-        actionLabel="Detailed PDF"
       />
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
@@ -539,7 +537,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
           eyebrow="Unnecessary Spend"
           title={`TK ${Math.round(unnecessarySpend).toLocaleString()}`}
           description="Total of imported transactions currently categorized as unnecessary spend for this department."
-          footer="Audit savings"
+          footer="Estimated savings"
         />
       </div>
     </div>
@@ -551,7 +549,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         eyebrow="Department Control"
         title="Department Operations"
         description="Manage department data, refresh forecasts, and keep financial operations up to date."
-        actionLabel="Operations"
       />
       <div className="grid grid-cols-1 xl:grid-cols-[0.88fr,1.12fr] gap-6">
         <form className={`${shellCard} p-7 bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.12),_transparent_45%),white]`} onSubmit={handleUpload}>
@@ -664,7 +661,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
               <div className="mt-4 space-y-3 text-sm text-slate-300">
                 <p>Grouping organizes related account activity.</p>
                 <p>Categorization separates necessary and unnecessary spend.</p>
-                <p>Forensic scans the current period for unusual activity.</p>
               </div>
             </div>
           </div>
@@ -672,7 +668,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
             <PipelineButton label="Run Grouping" icon={BarChart3} onClick={() => triggerAction('group')} />
             <PipelineButton label="Run Categorization" icon={CheckCircle2} onClick={() => triggerAction('categorize')} />
             <PipelineButton label="Forecast Budget" icon={Sparkles} onClick={() => triggerAction('forecast')} />
-            <PipelineButton label="Run Forensic" icon={AlertTriangle} onClick={() => triggerAction('forensic')} />
           </div>
           {status && <p className="mt-5 text-sm font-semibold text-blue-700">{status}</p>}
         </div>
@@ -680,13 +675,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     </div>
   );
 
-  const forensicView = (
+  const ruleForensicView = (
     <div className="space-y-8">
       <HeroHeader
         eyebrow="Forensic Lab"
         title={`${selectedDepartment?.department_name || 'Department'} Anomaly Review`}
         description="Upload a monthly transaction ledger, run Benford, Z-score, and RSF checks, then inspect every generated flag."
-        actionLabel="Audit"
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
@@ -818,13 +812,55 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     </div>
   );
 
+
+  const forensicView = (
+    <div className="space-y-6">
+      <div className={`${shellCard} p-3`}>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => setForensicMode('rule')}
+            className={`flex items-center gap-4 rounded-[26px] px-5 py-4 text-left transition ${forensicMode === 'rule' ? 'bg-slate-950 text-white shadow-[0_16px_38px_rgba(15,23,42,0.24)]' : 'bg-slate-50 text-slate-700 hover:bg-slate-100'}`}
+          >
+            <span className={`flex h-12 w-12 items-center justify-center rounded-2xl ${forensicMode === 'rule' ? 'bg-white/12 text-white' : 'bg-white text-red-600 shadow-sm'}`}>
+              <ShieldAlert size={22} />
+            </span>
+            <span>
+              <span className="block text-[11px] font-black uppercase tracking-[0.22em] opacity-70">Standard Review</span>
+              <span className="mt-1 block text-lg font-black">Rule-Based Scan</span>
+              <span className="mt-1 block text-sm font-semibold opacity-75">Benford, Z-score, and RSF checks.</span>
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setForensicMode('engine')}
+            className={`flex items-center gap-4 rounded-[26px] px-5 py-4 text-left transition ${forensicMode === 'engine' ? 'bg-slate-950 text-white shadow-[0_16px_38px_rgba(15,23,42,0.24)]' : 'bg-slate-50 text-slate-700 hover:bg-slate-100'}`}
+          >
+            <span className={`flex h-12 w-12 items-center justify-center rounded-2xl ${forensicMode === 'engine' ? 'bg-white/12 text-white' : 'bg-white text-blue-600 shadow-sm'}`}>
+              <Radar size={22} />
+            </span>
+            <span>
+              <span className="block text-[11px] font-black uppercase tracking-[0.22em] opacity-70">Deep Review</span>
+              <span className="mt-1 block text-lg font-black">Intelligence Engine</span>
+              <span className="mt-1 block text-sm font-semibold opacity-75">Multi-view forensic scoring and case reports.</span>
+            </span>
+          </button>
+        </div>
+      </div>
+
+      {forensicMode === 'rule'
+        ? ruleForensicView
+        : <ForensicIntelligence department={selectedDepartment} transactions={transactions} />}
+    </div>
+  );
+
   const reports = (
     <div className="space-y-8">
       <HeroHeader
         eyebrow="Executive Intelligence"
         title="Holistic Performance Reports"
         description="A cleaner presentation layer for budget utilization, forecast confidence, and operational efficiency."
-        actionLabel="Detailed PDF"
       />
       <div className="grid grid-cols-1 xl:grid-cols-[1.2fr,0.6fr,0.6fr] gap-6">
         <div className={`${shellCard} p-7`}>
@@ -860,7 +896,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
           eyebrow="Unnecessary Spend"
           title={`TK ${Math.round(unnecessarySpend).toLocaleString()}`}
           description={`${categorizationSummary?.unnecessary || 0} transactions categorized as unnecessary, worth this much imported spend.`}
-          footer="Audit savings"
+          footer="Estimated savings"
         />
       </div>
     </div>
@@ -872,7 +908,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         eyebrow="Realtime Fiscal Analysis"
         title={`${selectedDepartment?.department_name || 'Department'} Status`}
         description="Track department spending, forecast updates, and data integrity in one place."
-        actionLabel="Predictive"
       />
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
@@ -954,7 +989,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         eyebrow="Operational History"
         title="Recent Transaction Timeline"
         description="A cleaner ledger table for reviewing recent imported activity."
-        actionLabel="History"
       />
       <div className={`${shellCard} p-7`}>
         <SectionKicker title="Transaction History" subtitle="Recent imported records for the selected department." />
@@ -999,7 +1033,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         eyebrow="Team Oversight"
         title="Employee Access Map"
         description="Assign department access so each employee only sees the departments they're scoped to."
-        actionLabel="Employees"
       />
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
         {employees.map((employee) => (
@@ -1017,10 +1050,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         ? deptControl
         : activePath === '/dept-status'
           ? deptStatus
-          : activePath === '/forensic'
+          : activePath === '/forensic' || activePath === '/forensic-engine'
             ? forensicView
-          : activePath === '/forensic-engine'
-            ? <ForensicIntelligence department={selectedDepartment} transactions={transactions} />
             : activePath === '/reports'
               ? reports
               : activePath === '/history'
@@ -1112,17 +1143,19 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   );
 };
 
-const HeroHeader = ({ eyebrow, title, description, actionLabel }: { eyebrow: string; title: string; description: string; actionLabel: string }) => (
+const HeroHeader = ({ eyebrow, title, description, actionLabel }: { eyebrow: string; title: string; description: string; actionLabel?: string }) => (
   <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
     <div>
       <p className="text-[11px] font-black uppercase tracking-[0.28em] text-blue-600">{eyebrow}</p>
       <h1 className="mt-2 text-4xl font-black tracking-[-0.04em] text-slate-950">{title}</h1>
       <p className="mt-3 max-w-2xl text-lg text-slate-500">{description}</p>
     </div>
-    <button className="inline-flex items-center gap-2 self-start rounded-[22px] border border-slate-200 bg-white px-5 py-4 font-bold text-slate-700 shadow-[0_15px_40px_rgba(15,23,42,0.06)]">
-      <ArrowUpRight size={18} />
-      {actionLabel}
-    </button>
+    {actionLabel && (
+      <button type="button" className="inline-flex items-center gap-2 self-start rounded-[22px] border border-slate-200 bg-white px-5 py-4 font-bold text-slate-700 shadow-[0_15px_40px_rgba(15,23,42,0.06)]">
+        <ArrowUpRight size={18} />
+        {actionLabel}
+      </button>
+    )}
   </div>
 );
 
@@ -1165,7 +1198,7 @@ const ExecutiveMetric = ({
             ? 'bg-red-50 text-red-700'
             : 'bg-blue-50 text-blue-700'
       }`}>
-        {accent === 'positive' ? '+ healthy' : accent === 'negative' ? 'watch' : 'stable'}
+        {accent === 'positive' ? 'Healthy' : accent === 'negative' ? 'Needs review' : 'Stable'}
       </span>
     </div>
   </div>
@@ -1190,11 +1223,11 @@ const CalloutCard = ({
     <p className={`text-[11px] font-black uppercase tracking-[0.26em] ${tone === 'dark' ? 'text-blue-200' : 'text-emerald-100'}`}>{eyebrow}</p>
     <p className="mt-6 text-5xl font-black tracking-[-0.05em]">{title}</p>
     <p className={`mt-5 text-base leading-7 ${tone === 'dark' ? 'text-slate-300' : 'text-emerald-50/85'}`}>{description}</p>
-    <div className={`mt-10 inline-flex rounded-2xl px-4 py-3 text-sm font-black uppercase tracking-[0.18em] ${
-      tone === 'dark' ? 'bg-white/8 text-white' : 'bg-emerald-500/60 text-white'
+    <p className={`mt-10 border-t pt-4 text-sm font-black uppercase tracking-[0.18em] ${
+      tone === 'dark' ? 'border-white/10 text-slate-200' : 'border-emerald-400/50 text-emerald-50'
     }`}>
       {footer}
-    </div>
+    </p>
   </div>
 );
 
