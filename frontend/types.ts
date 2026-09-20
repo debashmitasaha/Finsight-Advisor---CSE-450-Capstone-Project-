@@ -462,6 +462,37 @@ export interface CalibrationRequirements {
   recalibration_batch: number;
 }
 
+// The five knobs an admin may change per company from the page, live, with no restart.
+export type CalibrationSettingKey =
+  | 'bootstrap_threshold'
+  | 'min_reviewed_rows'
+  | 'min_positive_labels'
+  | 'min_negative_labels'
+  | 'recalibration_batch';
+
+export interface CalibrationSettings {
+  values: Record<CalibrationSettingKey, number>;
+  defaults: Record<CalibrationSettingKey, number>;
+  bounds: Record<CalibrationSettingKey, [number, number]>;
+  overridden: CalibrationSettingKey[];
+  presets: Record<string, Partial<Record<CalibrationSettingKey, number>>>;
+  editable: boolean;
+  stored: boolean;
+  note: string;
+}
+
+export type CalibrationSettingsPayload = Partial<Record<CalibrationSettingKey, number | null>> & {
+  preset?: 'demo' | 'default';
+};
+
+export interface CalibrationSettingsResponse {
+  success: boolean;
+  settings: Partial<Record<CalibrationSettingKey, number>>;
+  calibration_triggered: boolean;
+  calibration: CalibrationRecord | null;
+  status: CalibrationStatus;
+}
+
 export interface CalibrationStatus {
   company: { company_id: string; company_name: string } | null;
   department: { department_id: string; department_name: string };
@@ -472,6 +503,7 @@ export interface CalibrationStatus {
   counts: { reviewed: number; confirmed: number; cleared: number; uncertain: number; usable: number };
   readiness: { ready: boolean; checks: ReadinessCheck[] };
   requirements: CalibrationRequirements;
+  settings: CalibrationSettings;
   sampling: {
     near_miss_share: number;
     sample_rate_near: number;

@@ -249,7 +249,10 @@ create table if not exists public.company_forensic_config (
   reviews_at_last_calibration integer not null default 0,
   calibrated_at timestamptz,
   updated_at timestamptz not null default now(),
-  engine_version text
+  engine_version text,
+  -- Per-company settings changed from the interface (minimums, batch, bootstrap line);
+  -- null means the deployment defaults apply. Read per request, no restart needed.
+  calibration_overrides jsonb
 );
 
 -- Append-only audit trail of every calibration attempt, activated or rejected.
