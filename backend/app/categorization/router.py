@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import Counter
 import json
 import os
 import re
@@ -10,7 +9,7 @@ import urllib.request
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.auth.router import get_current_user
@@ -417,14 +416,23 @@ def categorize_transactions(payload: CategorizeRequest, current_user: User = Dep
 
 @router.get("/dept/{dept_id}/summary")
 def get_categorization_summary(dept_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    transactions = db.query(Transaction).filter(Transaction.department_id == dept_id).all()
-    counts = Counter([txn.category or "uncategorized" for txn in transactions])
+    rows = (
+        db.query(
+            func.coalesce(Transaction.category, "uncategorized").label("category"),
+            func.count(Transaction.transaction_id).label("count"),
+        )
+        .filter(Transaction.department_id == dept_id)
+        .group_by(func.coalesce(Transaction.category, "uncategorized"))
+        .all()
+    )
+    counts = {row.category or "uncategorized": int(row.count or 0) for row in rows}
+    total = sum(counts.values())
     return {
         "dept_id": dept_id,
         "necessary": counts.get("necessary", 0),
         "unnecessary": counts.get("unnecessary", 0),
         "uncategorized": counts.get("uncategorized", 0),
-        "total": len(transactions),
+        "total": total,
     }
 
 
@@ -471,52 +479,56 @@ def suggest_expense_categories(
     categories = scoped_categories(db, department)
     groups = ensure_groups_from_transactions(db, payload.dept_id)
     candidates = []
-    gemini_groups = []
 
     for group in sorted(groups, key=lambda item: float(item.group_no or 0)):
-        if group.expense_category_status == "approved" and group.expense_category_id:
+        if group.expense_category_status in {"approved", "pending_review", "rejected"}:
             continue
         transactions = transactions_for_group(db, group)
         samples = transaction_samples(transactions)
         if not samples:
             continue
         group_id = group_identifier(group)
-        candidates.append(group)
-        gemini_groups.append(
-            {
-                "group_id": group_id,
-                "group_name": group.group_name,
-                "chart_acc_head_name": group.chart_acc_head_name,
-                "transaction_count": len(transactions),
-                "samples": samples,
-            }
+        candidates.append(
+            (
+                group,
+                {
+                    "group_id": group_id,
+                    "group_name": group.group_name,
+                    "chart_acc_head_name": group.chart_acc_head_name,
+                    "transaction_count": len(transactions),
+                    "samples": samples,
+                },
+            )
         )
-        if len(gemini_groups) >= max(1, min(payload.max_groups, 60)):
-            break
 
-    if not gemini_groups:
+    if not candidates:
         return {"success": True, "suggested_count": 0, "groups": [serialize_expense_group(db, group) for group in groups]}
 
-    assignments = call_gemini_for_expense_categories(gemini_groups, categories)
-    assignment_by_id = {str(item.get("group_id")): item for item in assignments}
-
     existing_keys = {category.category_key for category in categories}
+    batch_size = max(1, min(payload.max_groups, 60))
     suggested_count = 0
-    for group in candidates:
-        assignment = assignment_by_id.get(group_identifier(group))
-        if not assignment:
-            continue
-        name = category_display_name(str(assignment.get("category_name") or ""))
-        key = category_key(name)
-        is_new = key not in existing_keys
-        group.suggested_category_name = name
-        group.suggested_category_confidence = max(0.0, min(float(assignment.get("confidence") or 0), 1.0))
-        group.suggested_category_is_new = bool(is_new)
-        group.suggested_category_reason = str(assignment.get("reason") or "")[:500]
-        group.suggested_category_source = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
-        group.suggested_category_payload = assignment
-        group.expense_category_status = "pending_review"
-        suggested_count += 1
+
+    for start in range(0, len(candidates), batch_size):
+        batch = candidates[start:start + batch_size]
+        gemini_groups = [payload for _, payload in batch]
+        assignments = call_gemini_for_expense_categories(gemini_groups, categories)
+        assignment_by_id = {str(item.get("group_id")): item for item in assignments}
+
+        for group, _ in batch:
+            assignment = assignment_by_id.get(group_identifier(group))
+            if not assignment:
+                continue
+            name = category_display_name(str(assignment.get("category_name") or ""))
+            key = category_key(name)
+            is_new = key not in existing_keys
+            group.suggested_category_name = name
+            group.suggested_category_confidence = max(0.0, min(float(assignment.get("confidence") or 0), 1.0))
+            group.suggested_category_is_new = bool(is_new)
+            group.suggested_category_reason = str(assignment.get("reason") or "")[:500]
+            group.suggested_category_source = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+            group.suggested_category_payload = assignment
+            group.expense_category_status = "pending_review"
+            suggested_count += 1
 
     db.commit()
     refreshed_groups = db.query(Group).filter(Group.dept_id == payload.dept_id).order_by(Group.group_no.asc()).all()

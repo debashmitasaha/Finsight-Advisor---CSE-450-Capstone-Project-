@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import re
 from typing import Iterable
 
@@ -24,27 +23,6 @@ def clean_chart_account_head(text: str | None) -> str:
     cleaned = re.sub(r"\d+", " ", cleaned)
     cleaned = re.sub(r"[^a-z\s&/.-]", " ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
-
-
-def compute_dedupe_hash(
-    department_id: str,
-    transaction_date: str,
-    amount: float,
-    description: str | None,
-    invoice_id: str | None,
-    po_number: str | None,
-) -> str:
-    payload = "|".join(
-        [
-            department_id or "",
-            str(transaction_date or ""),
-            f"{float(amount):.2f}",
-            (description or "").strip().lower(),
-            (invoice_id or "").strip().lower(),
-            (po_number or "").strip().lower(),
-        ]
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def ensure_dataframe_columns(df: pd.DataFrame, required_columns: Iterable[str]) -> None:

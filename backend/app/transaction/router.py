@@ -1,21 +1,22 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
 from typing import Optional
 import uuid
 
 import pandas as pd
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.auth.router import get_current_user
 from app.database import get_db
-from app.models import Department, Transaction, UploadBatch, User
+from app.models import Anomaly, Department, ExpenseCategory, Transaction, UploadBatch, User
 from app.services.common import (
     CATEGORY_VALUES,
     clean_chart_account_head,
-    compute_dedupe_hash,
     ensure_dataframe_columns,
     normalize_bool,
 )
@@ -63,6 +64,13 @@ class UploadResponse(BaseModel):
     failed_rows: list[dict]
 
 
+class TransactionPageResponse(BaseModel):
+    items: list[TransactionResponse]
+    total: int
+    limit: int
+    offset: int
+
+
 class TransactionUpdate(BaseModel):
     category: Optional[str] = None
     approval_status: Optional[str] = None
@@ -80,8 +88,6 @@ def normalize_upload_columns(dataframe: pd.DataFrame) -> pd.DataFrame:
         "credit": ["Credit", "credit"],
         "description": ["narration", "Narration"],
         "chart_acc_head": ["chart_of_acc_head", "Chart of Account Head", "chart_account_head"],
-        "group_name": ["account_head_group", "Account Head Group"],
-        "group_no": ["Group No", "group", "group_number"],
         "payment_method": ["Voucher_Type", "voucher_type"],
         "invoice_id": ["voucher_number", "Voucher Number"],
         "voucher_number": ["voucher_number", "Voucher Number"],
@@ -108,11 +114,29 @@ def optional_text(row: pd.Series, column: str) -> Optional[str]:
     return text or None
 
 
-def optional_float(row: pd.Series, column: str) -> Optional[float]:
-    value = row.get(column)
-    if value is None or pd.isna(value):
-        return None
-    return float(value)
+def normalize_document_key_part(value: str | None) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def transaction_document_key(voucher_number: str | None, ref_number: str | None) -> str | None:
+    voucher = normalize_document_key_part(voucher_number)
+    reference = normalize_document_key_part(ref_number)
+    if voucher and reference:
+        return f"{voucher}|{reference}"
+    if voucher:
+        return voucher
+    if reference:
+        return reference
+    return None
+
+
+def dataframe_document_keys(dataframe: pd.DataFrame) -> set[str]:
+    keys: set[str] = set()
+    for _, row in dataframe.iterrows():
+        key = transaction_document_key(optional_text(row, "voucher_number"), optional_text(row, "po_number"))
+        if key:
+            keys.add(key)
+    return keys
 
 
 def serialize_transaction(txn: Transaction) -> TransactionResponse:
@@ -147,6 +171,16 @@ def serialize_transaction(txn: Transaction) -> TransactionResponse:
     )
 
 
+def _month_bucket(db: Session):
+    if db.bind and db.bind.dialect.name == "sqlite":
+        return func.strftime("%Y-%m", Transaction.transaction_date)
+    return func.to_char(Transaction.transaction_date, "YYYY-MM")
+
+
+def _serialize_category_name(name: str | None) -> str:
+    return name or "Unassigned"
+
+
 @router.post("/upload", response_model=UploadResponse)
 async def upload_transactions(
     file: UploadFile = File(...),
@@ -160,6 +194,7 @@ async def upload_transactions(
 
     try:
         contents = await file.read()
+        source_file_hash = hashlib.sha256(contents).hexdigest()
         dataframe = read_uploaded_file(file.filename or "upload.csv", contents)
         dataframe = normalize_upload_columns(dataframe)
         dataframe = resolve_amount_and_type(dataframe)
@@ -171,27 +206,50 @@ async def upload_transactions(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Unable to read upload: {exc}") from exc
 
+    existing_file = (
+        db.query(UploadBatch)
+        .filter(UploadBatch.department_id == dept_id, UploadBatch.source_file_hash == source_file_hash)
+        .first()
+    )
+    if existing_file:
+        raise HTTPException(status_code=409, detail="This exact ledger file has already been uploaded for this department.")
+
+    uploaded_document_keys = dataframe_document_keys(dataframe)
+    if uploaded_document_keys:
+        existing_document_keys = {
+            key
+            for key in (
+                transaction_document_key(voucher_number, po_number)
+                for voucher_number, po_number in db.query(Transaction.voucher_number, Transaction.po_number)
+                .filter(
+                    Transaction.department_id == dept_id,
+                    (Transaction.voucher_number.isnot(None)) | (Transaction.po_number.isnot(None)),
+                )
+                .all()
+            )
+            if key
+        }
+        overlap_count = len(uploaded_document_keys & existing_document_keys)
+        overlap_ratio = overlap_count / len(uploaded_document_keys)
+        if overlap_ratio >= 0.8:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This ledger overlaps a previous upload for this department "
+                    f"({overlap_count}/{len(uploaded_document_keys)} voucher/reference keys already exist)."
+                ),
+            )
+
     batch = UploadBatch(
         department_id=dept_id,
         source_file_name=file.filename or "upload.csv",
+        source_file_hash=source_file_hash,
         uploaded_by=current_user.user_id,
         row_count=len(dataframe.index),
         status="processing",
     )
     db.add(batch)
     db.flush()
-
-    # Load existing hashes once. Checking Supabase once per Excel row makes
-    # large uploads slow because every duplicate check is a network round trip.
-    existing_hashes = {
-        dedupe_hash
-        for (dedupe_hash,) in db.query(Transaction.dedupe_hash)
-        .filter(
-            Transaction.department_id == dept_id,
-            Transaction.dedupe_hash.isnot(None),
-        )
-        .all()
-    }
 
     rows_processed = 0
     rows_failed = 0
@@ -211,20 +269,6 @@ async def upload_transactions(
             account_head_group = optional_text(row, "account_head_group")
             voucher_type = optional_text(row, "voucher_type")
             po_number = optional_text(row, "po_number")
-            group_name = optional_text(row, "group_name")
-            group_no = optional_float(row, "group_no")
-
-            dedupe_hash = compute_dedupe_hash(
-                dept_id,
-                transaction_date.isoformat(),
-                amount,
-                description,
-                invoice_id,
-                po_number,
-            )
-            if dedupe_hash in existing_hashes:
-                duplicate_rows += 1
-                continue
 
             txn = Transaction(
                 # Supplying the primary key avoids PostgreSQL/SQLAlchemy bulk
@@ -238,8 +282,6 @@ async def upload_transactions(
                 category="uncategorized",
                 chart_acc_head=chart_acc_head,
                 cleaned_chart_acc_head=cleaned_chart,
-                group_no=group_no,
-                group_name=group_name,
                 payment_method=optional_text(row, "payment_method"),
                 invoice_id=invoice_id,
                 voucher_number=voucher_number,
@@ -250,10 +292,8 @@ async def upload_transactions(
                 approval_status=str(row.get("approval_status", "pending") or "pending").lower(),
                 source_file_name=file.filename,
                 upload_batch_id=batch.upload_batch_id,
-                dedupe_hash=dedupe_hash,
             )
             db.add(txn)
-            existing_hashes.add(dedupe_hash)
             rows_processed += 1
         except Exception as exc:  # pragma: no cover - row-specific data issues
             rows_failed += 1
@@ -272,6 +312,101 @@ async def upload_transactions(
     )
 
 
+@router.get("/dept/{dept_id}/summary")
+def get_department_transaction_summary(
+    dept_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    department = db.query(Department).filter(Department.department_id == dept_id).first()
+    if not department:
+        raise HTTPException(status_code=404, detail="Department not found")
+
+    summary = (
+        db.query(
+            func.count(Transaction.transaction_id).label("transaction_count"),
+            func.coalesce(func.sum(Transaction.amount), 0).label("total_spend"),
+            func.max(Transaction.transaction_date).label("latest_transaction_date"),
+        )
+        .filter(Transaction.department_id == dept_id)
+        .one()
+    )
+    category_rows = (
+        db.query(
+            func.coalesce(Transaction.category, "uncategorized").label("category"),
+            func.count(Transaction.transaction_id).label("count"),
+        )
+        .filter(Transaction.department_id == dept_id)
+        .group_by(func.coalesce(Transaction.category, "uncategorized"))
+        .all()
+    )
+    expense_rows = (
+        db.query(
+            ExpenseCategory.name.label("name"),
+            func.count(Transaction.transaction_id).label("count"),
+            func.coalesce(func.sum(Transaction.amount), 0).label("amount"),
+        )
+        .outerjoin(ExpenseCategory, Transaction.expense_category_id == ExpenseCategory.category_id)
+        .filter(Transaction.department_id == dept_id)
+        .group_by(ExpenseCategory.name)
+        .order_by(func.coalesce(func.sum(Transaction.amount), 0).desc())
+        .limit(12)
+        .all()
+    )
+    month_expr = _month_bucket(db)
+    trend_rows = (
+        db.query(
+            month_expr.label("month"),
+            func.coalesce(func.sum(Transaction.amount), 0).label("amount"),
+        )
+        .filter(Transaction.department_id == dept_id)
+        .group_by(month_expr)
+        .order_by(month_expr.desc())
+        .limit(6)
+        .all()
+    )
+    unresolved_anomalies = int(
+        db.query(func.count(Anomaly.anomaly_id))
+        .filter(Anomaly.department_id == dept_id, Anomaly.is_resolved.is_(False))
+        .scalar()
+        or 0
+    )
+    flagged_transactions = int(
+        db.query(func.count(Transaction.transaction_id))
+        .filter(Transaction.department_id == dept_id, Transaction.is_flagged.is_(True))
+        .scalar()
+        or 0
+    )
+
+    category_counts = {row.category or "uncategorized": int(row.count or 0) for row in category_rows}
+    return {
+        "department_id": dept_id,
+        "transaction_count": int(summary.transaction_count or 0),
+        "total_spend": float(summary.total_spend or 0),
+        "latest_transaction_date": summary.latest_transaction_date.isoformat() if summary.latest_transaction_date else None,
+        "active_anomaly_count": unresolved_anomalies,
+        "flagged_transaction_count": flagged_transactions,
+        "necessity": {
+            "necessary": category_counts.get("necessary", 0),
+            "unnecessary": category_counts.get("unnecessary", 0),
+            "uncategorized": category_counts.get("uncategorized", 0),
+            "total": int(summary.transaction_count or 0),
+        },
+        "expense_category_breakdown": [
+            {
+                "name": _serialize_category_name(row.name),
+                "count": int(row.count or 0),
+                "amount": float(row.amount or 0),
+            }
+            for row in expense_rows
+        ],
+        "spend_trend": [
+            {"month": row.month, "amount": float(row.amount or 0)}
+            for row in reversed(trend_rows)
+        ],
+    }
+
+
 @router.get("/dept/{dept_id}", response_model=list[TransactionResponse])
 def get_transactions_by_department(
     dept_id: str,
@@ -279,6 +414,11 @@ def get_transactions_by_department(
     year: Optional[int] = None,
     category: Optional[str] = None,
     flagged: Optional[bool] = None,
+    upload_batch_id: Optional[str] = None,
+    group_no: Optional[float] = None,
+    chart_acc_head_name: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -292,8 +432,55 @@ def get_transactions_by_department(
         query = query.filter(Transaction.category == category)
     if flagged is not None:
         query = query.filter(Transaction.is_flagged == flagged)
-    transactions = query.order_by(Transaction.transaction_date.desc()).all()
+    if upload_batch_id:
+        query = query.filter(Transaction.upload_batch_id == upload_batch_id)
+    if group_no is not None:
+        query = query.filter(Transaction.group_no == group_no)
+    elif chart_acc_head_name:
+        query = query.filter(Transaction.cleaned_chart_acc_head == chart_acc_head_name)
+    transactions = query.order_by(Transaction.transaction_date.desc()).offset(offset).limit(limit).all()
     return [serialize_transaction(txn) for txn in transactions]
+
+
+@router.get("/dept/{dept_id}/page", response_model=TransactionPageResponse)
+def get_transactions_page_by_department(
+    dept_id: str,
+    month: Optional[int] = None,
+    year: Optional[int] = None,
+    category: Optional[str] = None,
+    flagged: Optional[bool] = None,
+    upload_batch_id: Optional[str] = None,
+    group_no: Optional[float] = None,
+    chart_acc_head_name: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    query = db.query(Transaction).filter(Transaction.department_id == dept_id)
+    if month is not None and year is not None:
+        query = query.filter(
+            Transaction.transaction_date >= datetime(year, month, 1),
+            Transaction.transaction_date < datetime(year + (month // 12), (month % 12) + 1, 1),
+        )
+    if category:
+        query = query.filter(Transaction.category == category)
+    if flagged is not None:
+        query = query.filter(Transaction.is_flagged == flagged)
+    if upload_batch_id:
+        query = query.filter(Transaction.upload_batch_id == upload_batch_id)
+    if group_no is not None:
+        query = query.filter(Transaction.group_no == group_no)
+    elif chart_acc_head_name:
+        query = query.filter(Transaction.cleaned_chart_acc_head == chart_acc_head_name)
+    total = query.count()
+    transactions = query.order_by(Transaction.transaction_date.desc()).offset(offset).limit(limit).all()
+    return {
+        "items": [serialize_transaction(txn) for txn in transactions],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/{transaction_id}", response_model=TransactionResponse)

@@ -14,6 +14,7 @@ import {
   Anomaly,
   Company,
   Department,
+  DepartmentTransactionSummary,
   ExpenseCategory,
   ExpenseCategorizationRunResponse,
   ExpenseGroupSummary,
@@ -23,6 +24,7 @@ import {
   ForecastSourceMode,
   ForensicRunResponse,
   Transaction,
+  TransactionPage,
   UploadBatchSummary,
   UserAccount,
 } from '../types';
@@ -87,7 +89,26 @@ export const api = {
     form.append('file', file);
     return request('/transactions/upload', { method: 'POST', body: form });
   },
-  transactions: (deptId: string) => request<Transaction[]>(`/transactions/dept/${deptId}`),
+  transactions: (deptId: string, options: { limit?: number; offset?: number; uploadBatchId?: string | null; groupNo?: number | null; chartAccHeadName?: string | null } = {}) => {
+    const params = new URLSearchParams();
+    if (options.limit) params.set('limit', String(options.limit));
+    if (options.offset) params.set('offset', String(options.offset));
+    if (options.uploadBatchId) params.set('upload_batch_id', options.uploadBatchId);
+    if (options.groupNo !== null && options.groupNo !== undefined) params.set('group_no', String(options.groupNo));
+    else if (options.chartAccHeadName) params.set('chart_acc_head_name', options.chartAccHeadName);
+    const query = params.toString();
+    return request<Transaction[]>(`/transactions/dept/${deptId}${query ? `?${query}` : ''}`);
+  },
+  transactionsPage: (deptId: string, options: { limit?: number; offset?: number; uploadBatchId?: string | null; groupNo?: number | null; chartAccHeadName?: string | null } = {}) => {
+    const params = new URLSearchParams();
+    params.set('limit', String(options.limit ?? 100));
+    params.set('offset', String(options.offset ?? 0));
+    if (options.uploadBatchId) params.set('upload_batch_id', options.uploadBatchId);
+    if (options.groupNo !== null && options.groupNo !== undefined) params.set('group_no', String(options.groupNo));
+    else if (options.chartAccHeadName) params.set('chart_acc_head_name', options.chartAccHeadName);
+    return request<TransactionPage>(`/transactions/dept/${deptId}/page?${params.toString()}`);
+  },
+  transactionSummary: (deptId: string) => request<DepartmentTransactionSummary>(`/transactions/dept/${deptId}/summary`),
   groupingStats: (deptId: string) => request(`/grouping/dept/${deptId}/statistics`),
   runGrouping: (deptId: string) => request('/grouping/assign-groups', { method: 'POST', body: JSON.stringify({ dept_id: deptId }) }),
   categorizationSummary: (deptId: string) => request(`/categorization/dept/${deptId}/summary`),

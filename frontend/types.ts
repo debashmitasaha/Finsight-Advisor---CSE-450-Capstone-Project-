@@ -76,6 +76,37 @@ export interface Transaction {
   upload_batch_id: string | null;
 }
 
+export interface TransactionPage {
+  items: Transaction[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface DepartmentTransactionSummary {
+  department_id: string;
+  transaction_count: number;
+  total_spend: number;
+  latest_transaction_date: string | null;
+  active_anomaly_count: number;
+  flagged_transaction_count: number;
+  necessity: {
+    necessary: number;
+    unnecessary: number;
+    uncategorized: number;
+    total: number;
+  };
+  expense_category_breakdown: Array<{
+    name: string;
+    count: number;
+    amount: number;
+  }>;
+  spend_trend: Array<{
+    month: string;
+    amount: number;
+  }>;
+}
+
 export interface Forecast {
   forecast_id: string;
   forecast_period_start: string;

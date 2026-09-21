@@ -147,6 +147,7 @@ def sync_postgres_schema() -> None:
         text('ALTER TABLE IF EXISTS "group" ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()'),
         text('ALTER TABLE IF EXISTS upload_batch ADD COLUMN IF NOT EXISTS department_id UUID'),
         text('ALTER TABLE IF EXISTS upload_batch ADD COLUMN IF NOT EXISTS uploaded_by UUID'),
+        text('ALTER TABLE IF EXISTS upload_batch ADD COLUMN IF NOT EXISTS source_file_hash VARCHAR(128)'),
         text('ALTER TABLE IF EXISTS upload_batch ADD COLUMN IF NOT EXISTS row_count INTEGER NOT NULL DEFAULT 0'),
         text("ALTER TABLE IF EXISTS upload_batch ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'processing'"),
         text('ALTER TABLE IF EXISTS transaction ADD COLUMN IF NOT EXISTS department_id UUID'),
@@ -188,6 +189,7 @@ def sync_postgres_schema() -> None:
         text('CREATE INDEX IF NOT EXISTS idx_expense_category_company ON expense_category(company_id)'),
         text('CREATE INDEX IF NOT EXISTS idx_expense_category_department ON expense_category(department_id)'),
         text('CREATE INDEX IF NOT EXISTS idx_group_expense_category ON "group"(expense_category_id)'),
+        text('CREATE INDEX IF NOT EXISTS idx_upload_batch_file_hash ON upload_batch(department_id, source_file_hash)'),
         text('CREATE INDEX IF NOT EXISTS idx_transaction_expense_category ON transaction(expense_category_id)'),
         text("UPDATE transaction SET transaction_type = 'debit' WHERE transaction_type IS NULL"),
     ]
@@ -208,6 +210,9 @@ def sync_sqlite_schema() -> None:
             "account_head_group": "TEXT",
             "voucher_type": "TEXT",
             "expense_category_id": "CHAR(36)",
+        },
+        "upload_batch": {
+            "source_file_hash": "VARCHAR(128)",
         },
         "group": {
             "expense_category_id": "CHAR(36)",

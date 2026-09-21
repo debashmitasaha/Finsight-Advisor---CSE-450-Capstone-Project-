@@ -44,6 +44,7 @@ import { api } from '../lib/api';
 import {
   Anomaly,
   Department,
+  DepartmentTransactionSummary,
   ExpenseCategory,
   ExpenseGroupSummary,
   Forecast,
@@ -51,6 +52,7 @@ import {
   ForecastSourceMode,
   ForensicRunResponse,
   Transaction,
+  TransactionPage,
   UploadBatchSummary,
   UserAccount,
 } from '../types';
@@ -63,7 +65,10 @@ interface AdminDashboardProps {
 
 const shellCard = 'rounded-[32px] border border-slate-200/80 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.06)]';
 type ForensicMode = 'rule' | 'engine';
+type ExpenseReviewTab = 'ledger' | 'pending' | 'approved';
 const MAX_ANNUAL_BUDGET = 9_999_999_999_999.99;
+const LEDGER_PAGE_SIZE = 50;
+const GROUP_TRANSACTION_PAGE_SIZE = 50;
 const EMPLOYEE_SCOPE_OPTIONS = [
   { id: 'view_transactions', label: 'View Ledger' },
   { id: 'run_analysis', label: 'Run Analysis' },
@@ -75,6 +80,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [activePath, setActivePath] = useState('/dashboard');
   const [departments, setDepartments] = useState<Department[]>([]);
   const [selectedDeptId, setSelectedDeptId] = useState('');
+  const [departmentSummary, setDepartmentSummary] = useState<DepartmentTransactionSummary | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [forecasts, setForecasts] = useState<Forecast[]>([]);
   const [forecastHistory, setForecastHistory] = useState<{ month: string; amount: number }[]>([]);
@@ -93,6 +99,16 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [categorizationSummary, setCategorizationSummary] = useState<any>(null);
   const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>([]);
   const [expenseGroups, setExpenseGroups] = useState<ExpenseGroupSummary[]>([]);
+  const [expenseReviewTab, setExpenseReviewTab] = useState<ExpenseReviewTab>('ledger');
+  const [ledgerBatchFilter, setLedgerBatchFilter] = useState('all');
+  const [ledgerOffset, setLedgerOffset] = useState(0);
+  const [ledgerPage, setLedgerPage] = useState<TransactionPage | null>(null);
+  const [ledgerLoading, setLedgerLoading] = useState(false);
+  const [ledgerRefreshKey, setLedgerRefreshKey] = useState(0);
+  const [selectedExpenseGroup, setSelectedExpenseGroup] = useState<ExpenseGroupSummary | null>(null);
+  const [groupTransactionPage, setGroupTransactionPage] = useState<TransactionPage | null>(null);
+  const [groupTransactionOffset, setGroupTransactionOffset] = useState(0);
+  const [groupTransactionsLoading, setGroupTransactionsLoading] = useState(false);
   const [categoryDrafts, setCategoryDrafts] = useState<Record<string, string>>({});
   const [employees, setEmployees] = useState<UserAccount[]>([]);
   const [file, setFile] = useState<File | null>(null);
@@ -102,7 +118,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [selectedAnomaly, setSelectedAnomaly] = useState<Anomaly | null>(null);
   const [forensicMode, setForensicMode] = useState<ForensicMode>('rule');
   const [status, setStatus] = useState<string | null>(null);
+  const [blockingAction, setBlockingAction] = useState<{ title: string; detail: string } | null>(null);
+  const [expenseGroupAction, setExpenseGroupAction] = useState<{ key: string; action: 'approve' | 'reject' } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [departmentLoading, setDepartmentLoading] = useState(false);
+  const [transactionsLoading, setTransactionsLoading] = useState(false);
+  const [controlDataLoading, setControlDataLoading] = useState(false);
+  const [forecastLoading, setForecastLoading] = useState(false);
+  const departmentRequestRef = useRef(0);
+  const forecastRequestRef = useRef(0);
 
   const loadBase = async () => {
     const [departmentData, userData] = await Promise.all([api.departments(), api.users()]);
@@ -113,28 +137,50 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     }
   };
 
-  const loadDepartmentData = async (departmentId: string) => {
+  const loadDepartmentData = async (departmentId: string, shouldApply = () => true) => {
     if (!departmentId) return;
-    const [transactionData, anomalyData, groupingData, categorizationData, batchData, expenseCategoryData, expenseGroupData] = await Promise.all([
-      api.transactions(departmentId),
+    const summaryData = await api.transactionSummary(departmentId);
+    if (!shouldApply()) return;
+    setDepartmentSummary(summaryData);
+    setCategorizationSummary(summaryData.necessity);
+  };
+
+  const loadTransactionsData = async (departmentId: string, limit = 100, shouldApply = () => true) => {
+    if (!departmentId) return;
+    const transactionData = await api.transactions(departmentId, { limit });
+    if (!shouldApply()) return;
+    setTransactions(transactionData);
+  };
+
+  const loadForensicData = async (departmentId: string, shouldApply = () => true) => {
+    if (!departmentId) return;
+    const [transactionData, anomalyData] = await Promise.all([
+      api.transactions(departmentId, { limit: 500 }),
       api.anomalies(departmentId),
+    ]);
+    if (!shouldApply()) return;
+    setTransactions(transactionData);
+    setAnomalies(anomalyData);
+  };
+
+  const loadControlData = async (departmentId: string, shouldApply = () => true) => {
+    if (!departmentId) return;
+    const [groupingData, batchData, expenseCategoryData, expenseGroupData] = await Promise.all([
       api.groupingStats(departmentId),
-      api.categorizationSummary(departmentId),
       api.uploadBatches(departmentId),
       api.expenseCategories(departmentId),
       api.expenseGroups(departmentId),
     ]);
-    setTransactions(transactionData);
-    setAnomalies(anomalyData);
+    if (!shouldApply()) return;
     setGroupingStats(groupingData);
-    setCategorizationSummary(categorizationData);
     setUploadBatches(batchData);
     setExpenseCategories(expenseCategoryData);
     setExpenseGroups(expenseGroupData);
   };
 
-  const loadForecastContext = async (departmentId: string) => {
+  const loadForecastContext = async (departmentId: string, shouldApply = () => true) => {
     if (!departmentId || !isForecastSourceReady(sourceMode, selectedBatchId, dateFrom, dateTo)) {
+      if (!shouldApply()) return;
       setForecasts([]);
       setForecastHistory([]);
       setForecastDiagnostics(null);
@@ -149,6 +195,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       dateFrom: dateFrom || null,
       dateTo: dateTo || null,
     });
+    if (!shouldApply()) return;
     setForecasts(forecastContext.forecasts);
     setForecastHistory(forecastContext.history);
     setForecastDiagnostics(forecastContext.diagnostics);
@@ -170,15 +217,77 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   }, []);
 
   useEffect(() => {
-    if (selectedDeptId) {
-      loadDepartmentData(selectedDeptId).catch((err) => setStatus(err.message));
-    }
+    if (!selectedDeptId) return;
+    const requestId = departmentRequestRef.current + 1;
+    departmentRequestRef.current = requestId;
+    setDepartmentLoading(true);
+
+    loadDepartmentData(selectedDeptId, () => departmentRequestRef.current === requestId)
+      .catch((err) => setStatus(err.message))
+      .finally(() => {
+        if (departmentRequestRef.current === requestId) {
+          setDepartmentLoading(false);
+        }
+      });
   }, [selectedDeptId]);
+
   useEffect(() => {
-    if (selectedDeptId) {
-      loadForecastContext(selectedDeptId).catch((err) => setStatus(err.message));
+    if (!selectedDeptId) return;
+    const requestId = forecastRequestRef.current + 1;
+    forecastRequestRef.current = requestId;
+
+    const needsForecastContext = activePath === '/dept-status' || activePath === '/reports';
+    if (!needsForecastContext) {
+      setForecastLoading(false);
+      return;
     }
-  }, [selectedDeptId, monthsAhead, sourceMode, selectedBatchId, dateFrom, dateTo]);
+
+    setForecastLoading(true);
+
+    loadForecastContext(selectedDeptId, () => forecastRequestRef.current === requestId)
+      .catch((err) => setStatus(err.message))
+      .finally(() => {
+        if (forecastRequestRef.current === requestId) {
+          setForecastLoading(false);
+        }
+      });
+  }, [selectedDeptId, monthsAhead, sourceMode, selectedBatchId, dateFrom, dateTo, activePath]);
+
+  useEffect(() => {
+    if (!selectedDeptId) return;
+    let cancelled = false;
+    const departmentId = selectedDeptId;
+
+    if (activePath === '/history' || activePath === '/audit-logs') {
+      setTransactionsLoading(true);
+      loadTransactionsData(departmentId, 100, () => !cancelled)
+        .catch((err) => setStatus(err.message))
+        .finally(() => {
+          if (!cancelled) setTransactionsLoading(false);
+        });
+    }
+
+    if (activePath === '/forensic' || activePath === '/forensic-engine') {
+      setTransactionsLoading(true);
+      loadForensicData(departmentId, () => !cancelled)
+        .catch((err) => setStatus(err.message))
+        .finally(() => {
+          if (!cancelled) setTransactionsLoading(false);
+        });
+    }
+
+    if (activePath === '/dept-control' || activePath === '/dept-status') {
+      setControlDataLoading(true);
+      loadControlData(departmentId, () => !cancelled)
+        .catch((err) => setStatus(err.message))
+        .finally(() => {
+          if (!cancelled) setControlDataLoading(false);
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDeptId, activePath]);
 
   useEffect(() => {
     if (sourceMode !== 'upload_batch') {
@@ -195,13 +304,67 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   }, [sourceMode, uploadBatches, selectedBatchId]);
 
   useEffect(() => {
-    if (!selectedAnomaly) return;
+    if (!selectedAnomaly && !selectedExpenseGroup) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setSelectedAnomaly(null);
+      if (event.key === 'Escape') {
+        setSelectedAnomaly(null);
+        setSelectedExpenseGroup(null);
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedAnomaly]);
+  }, [selectedAnomaly, selectedExpenseGroup]);
+
+  useEffect(() => {
+    setSelectedExpenseGroup(null);
+    setGroupTransactionPage(null);
+    setGroupTransactionOffset(0);
+  }, [selectedDeptId]);
+
+  useEffect(() => {
+    if (!selectedDeptId || activePath !== '/dept-control' || expenseReviewTab !== 'ledger') return;
+    let cancelled = false;
+    setLedgerLoading(true);
+    api.transactionsPage(selectedDeptId, {
+      limit: LEDGER_PAGE_SIZE,
+      offset: ledgerOffset,
+      uploadBatchId: ledgerBatchFilter === 'all' ? null : ledgerBatchFilter,
+    })
+      .then((page) => {
+        if (!cancelled) setLedgerPage(page);
+      })
+      .catch((err) => setStatus(err.message))
+      .finally(() => {
+        if (!cancelled) setLedgerLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDeptId, activePath, expenseReviewTab, ledgerBatchFilter, ledgerOffset, ledgerRefreshKey]);
+
+  useEffect(() => {
+    if (!selectedDeptId || !selectedExpenseGroup) return;
+    let cancelled = false;
+    setGroupTransactionsLoading(true);
+    api.transactionsPage(selectedDeptId, {
+      limit: GROUP_TRANSACTION_PAGE_SIZE,
+      offset: groupTransactionOffset,
+      groupNo: selectedExpenseGroup.group_no,
+      chartAccHeadName: selectedExpenseGroup.group_no === null || selectedExpenseGroup.group_no === undefined
+        ? selectedExpenseGroup.chart_acc_head_name
+        : null,
+    })
+      .then((page) => {
+        if (!cancelled) setGroupTransactionPage(page);
+      })
+      .catch((err) => setStatus(err.message))
+      .finally(() => {
+        if (!cancelled) setGroupTransactionsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDeptId, selectedExpenseGroup, groupTransactionOffset]);
 
   const selectedDepartment = useMemo(
     () => departments.find((department) => department.department_id === selectedDeptId) || null,
@@ -217,6 +380,33 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     [uploadBatches, selectedBatchId],
   );
 
+  const isDepartmentSwitching = departmentLoading || forecastLoading;
+
+  const handleDepartmentSelect = (departmentId: string) => {
+    if (!departmentId || departmentId === selectedDeptId) return;
+    setDepartmentSummary(null);
+    setTransactions([]);
+    setAnomalies([]);
+    setGroupingStats(null);
+    setCategorizationSummary(null);
+    setUploadBatches([]);
+    setExpenseCategories([]);
+    setExpenseGroups([]);
+    setForecasts([]);
+    setForecastHistory([]);
+    setForecastDiagnostics(null);
+    setForecastModel(null);
+    setLedgerPage(null);
+    setLedgerOffset(0);
+    setLedgerBatchFilter('all');
+    setDepartmentLoading(true);
+    setTransactionsLoading(activePath === '/history' || activePath === '/audit-logs' || activePath === '/forensic' || activePath === '/forensic-engine');
+    setControlDataLoading(activePath === '/dept-control' || activePath === '/dept-status');
+    setForecastLoading(activePath === '/dept-status' || activePath === '/reports');
+    setSelectedAnomaly(null);
+    setSelectedDeptId(departmentId);
+  };
+
   const transactionById = useMemo(() => {
     return new Map(transactions.map((transaction) => [transaction.transaction_id, transaction]));
   }, [transactions]);
@@ -225,6 +415,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     () => anomalies.filter((anomaly) => !anomaly.is_resolved),
     [anomalies],
   );
+
+  const activeAnomalyCount = departmentSummary?.active_anomaly_count ?? activeAnomalies.length;
 
   const anomalyCounts = useMemo(() => {
     return activeAnomalies.reduce(
@@ -265,6 +457,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       const result = await api.runForensic(selectedDeptId, month, year);
       setForensicResult(result);
       await loadDepartmentData(selectedDeptId);
+      await loadForensicData(selectedDeptId);
 
       if (result.message) {
         setStatus(result.message);
@@ -294,6 +487,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       setStatus('Uploading monthly forensic ledger...');
       await api.uploadTransactions(selectedDeptId, forensicFile);
       await loadDepartmentData(selectedDeptId);
+      await loadForensicData(selectedDeptId);
       setStatus('Monthly transaction data uploaded. Run forensic scan next.');
       setForensicFile(null);
     } catch (err) {
@@ -305,6 +499,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     try {
       await api.resolveAnomaly(anomalyId);
       await loadDepartmentData(selectedDeptId);
+      await loadForensicData(selectedDeptId);
       if (selectedAnomaly?.anomaly_id === anomalyId) setSelectedAnomaly(null);
       setStatus('Anomaly flag undone.');
     } catch (err) {
@@ -366,6 +561,18 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
 
   const triggerAction = async (action: 'group' | 'categorize' | 'expense' | 'forecast') => {
     if (!selectedDeptId) return;
+    const blockingCopy: Record<'group' | 'expense', { title: string; detail: string }> = {
+      group: {
+        title: 'Running Grouping',
+        detail: 'Assigning group IDs to the department ledger transactions.',
+      },
+      expense: {
+        title: 'Suggesting Expense Categories',
+        detail: 'Processing every eligible group in batches and saving review items.',
+      },
+    };
+    const shouldBlock = action === 'group' || action === 'expense';
+    if (shouldBlock) setBlockingAction(blockingCopy[action]);
     setStatus(`Running ${action}...`);
     try {
       if (action === 'group') await api.runGrouping(selectedDeptId);
@@ -374,6 +581,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         const result = await api.runExpenseCategorization(selectedDeptId);
         setExpenseGroups(result.groups);
         await loadDepartmentData(selectedDeptId);
+        await loadControlData(selectedDeptId);
         setStatus(`${result.suggested_count} expense category suggestion${result.suggested_count === 1 ? '' : 's'} ready for review.`);
         return;
       }
@@ -398,10 +606,21 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       }
       
       await loadDepartmentData(selectedDeptId);
+      if (action === 'group' || action === 'categorize') {
+        await loadControlData(selectedDeptId);
+      }
       setStatus(`${action} completed successfully.`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : `Unable to run ${action}.`);
+    } finally {
+      if (shouldBlock) setBlockingAction(null);
     }
+  };
+
+  const handleViewExpenseGroupTransactions = (group: ExpenseGroupSummary) => {
+    setSelectedExpenseGroup(group);
+    setGroupTransactionOffset(0);
+    setGroupTransactionPage(null);
   };
 
   const handleApproveExpenseGroup = async (group: ExpenseGroupSummary) => {
@@ -414,6 +633,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     }
 
     setStatus('Approving expense category...');
+    setExpenseGroupAction({ key, action: 'approve' });
     try {
       await api.approveExpenseGroup({
         dept_id: selectedDeptId,
@@ -422,15 +642,20 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         category_name: categoryName,
       });
       await loadDepartmentData(selectedDeptId);
+      await loadControlData(selectedDeptId);
       setStatus('Expense category approved.');
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Unable to approve expense category.');
+    } finally {
+      setExpenseGroupAction(null);
     }
   };
 
   const handleRejectExpenseGroup = async (group: ExpenseGroupSummary) => {
     if (!selectedDeptId) return;
+    const key = expenseGroupKey(group);
     setStatus('Rejecting expense category suggestion...');
+    setExpenseGroupAction({ key, action: 'reject' });
     try {
       await api.rejectExpenseGroup({
         dept_id: selectedDeptId,
@@ -438,63 +663,55 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         chart_acc_head_name: group.chart_acc_head_name,
       });
       await loadDepartmentData(selectedDeptId);
+      await loadControlData(selectedDeptId);
       setStatus('Expense category suggestion rejected.');
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Unable to reject expense category suggestion.');
+    } finally {
+      setExpenseGroupAction(null);
     }
   };
 
   const handleUpload = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selectedDeptId || !file) return;
+    setBlockingAction({
+      title: 'Uploading Ledger',
+      detail: 'Reading the file, checking for previous uploads, and saving valid rows.',
+    });
     setStatus('Uploading transactions...');
-    await api.uploadTransactions(selectedDeptId, file);
-    await loadDepartmentData(selectedDeptId);
-    setStatus('Upload complete.');
-    setFile(null);
+    try {
+      await api.uploadTransactions(selectedDeptId, file);
+      await loadDepartmentData(selectedDeptId);
+      await loadControlData(selectedDeptId);
+      setExpenseReviewTab('ledger');
+      setLedgerOffset(0);
+      setLedgerBatchFilter('all');
+      setLedgerRefreshKey((current) => current + 1);
+      setStatus('Upload complete.');
+      setFile(null);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Unable to upload transactions.');
+    } finally {
+      setBlockingAction(null);
+    }
   };
 
   const actualSpend = useMemo(
-    () => transactions.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0),
-    [transactions],
-  );
-
-  const projectedSpend = useMemo(
-    () => forecasts.reduce((sum, forecast) => sum + Number(forecast.predicted_amount || 0), 0),
-    [forecasts],
+    () => Number(departmentSummary?.total_spend || 0),
+    [departmentSummary],
   );
 
   const expenseCategoryBreakdown = useMemo(() => {
-    const byCategory = new Map<string, { name: string; count: number; amount: number }>();
-    transactions.forEach((transaction) => {
-      const name = transaction.expense_category_name || 'Unassigned';
-      const current = byCategory.get(name) || { name, count: 0, amount: 0 };
-      current.count += 1;
-      current.amount += Number(transaction.amount || 0);
-      byCategory.set(name, current);
-    });
-    return Array.from(byCategory.values()).sort((left, right) => right.amount - left.amount);
-  }, [transactions]);
+    return departmentSummary?.expense_category_breakdown || [];
+  }, [departmentSummary]);
 
   const spendTrend = useMemo(() => {
-    const monthlyMap = new Map<string, number>();
-    transactions.forEach((transaction) => {
-      const month = new Date(transaction.transaction_date).toISOString().slice(0, 7);
-      monthlyMap.set(month, (monthlyMap.get(month) || 0) + Number(transaction.amount || 0));
-    });
-
-    const history = Array.from(monthlyMap.entries())
-      .sort(([left], [right]) => left.localeCompare(right))
-      .slice(-6)
-      .map(([month, actual]) => ({
-        month: formatShortMonth(month),
-        actual: Math.round(actual),
-      }));
-
-    return history.map((point) => ({
-      ...point,
+    return (departmentSummary?.spend_trend || []).map((point) => ({
+      month: formatShortMonth(point.month),
+      actual: Math.round(point.amount),
     }));
-  }, [transactions]);
+  }, [departmentSummary]);
 
   const forecastChartData = useMemo(() => {
     const history = (forecastHistory.length
@@ -541,9 +758,54 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     [sourceMode],
   );
 
-  const insightScore = forecastDiagnostics?.mape !== null && forecastDiagnostics?.mape !== undefined
-    ? Math.max(72, Math.round(100 - forecastDiagnostics.mape))
-    : 82;
+  const transactionCount = departmentSummary?.transaction_count || 0;
+  const hasTransactions = transactionCount > 0;
+  const hasGroups = Number(groupingStats?.total_groups || 0) > 0;
+  const categorizedTotal = Number(categorizationSummary?.necessary || 0) + Number(categorizationSummary?.unnecessary || 0);
+  const categorizationCoverage = transactionCount > 0 ? Math.round((categorizedTotal / transactionCount) * 100) : 0;
+  const pendingExpenseReviews = expenseGroups.filter((group) => group.expense_category_status === 'pending_review').length;
+  const pendingExpenseGroups = useMemo(
+    () => expenseGroups.filter((group) => group.expense_category_status === 'pending_review'),
+    [expenseGroups],
+  );
+  const approvedExpenseGroups = useMemo(
+    () => expenseGroups.filter((group) => group.expense_category_status === 'approved'),
+    [expenseGroups],
+  );
+  const visibleExpenseGroups = expenseReviewTab === 'pending' ? pendingExpenseGroups : approvedExpenseGroups;
+  const ledgerBatchesWithTransactions = uploadBatches.filter((batch) => batch.transaction_count > 0);
+  const duplicateOnlyBatches = uploadBatches.filter((batch) => batch.row_count > 0 && batch.transaction_count === 0);
+  const ledgerRows = ledgerPage?.items || [];
+  const ledgerTotal = ledgerPage?.total || 0;
+  const ledgerStart = ledgerTotal > 0 ? ledgerOffset + 1 : 0;
+  const ledgerEnd = Math.min(ledgerOffset + LEDGER_PAGE_SIZE, ledgerTotal);
+  const forecastReady = forecasts.length > 0;
+  const budgetUtilization = Number(selectedDepartment?.annual_budget_utilization_pct || 0);
+  const latestTransactionLabel = departmentSummary?.latest_transaction_date
+    ? formatDate(departmentSummary.latest_transaction_date)
+    : 'No transactions yet';
+  const dataReadiness = [
+    {
+      label: 'Transactions',
+      value: hasTransactions ? `${transactionCount.toLocaleString()} rows` : 'Missing',
+      state: hasTransactions ? 'ready' : 'missing',
+    },
+    {
+      label: 'Grouping',
+      value: hasGroups ? `${Number(groupingStats?.total_groups || 0).toLocaleString()} groups` : 'Not run',
+      state: hasGroups ? 'ready' : 'missing',
+    },
+    {
+      label: 'Categorization',
+      value: categorizationCoverage ? `${categorizationCoverage}% covered` : 'Not run',
+      state: categorizationCoverage >= 80 ? 'ready' : categorizationCoverage > 0 ? 'warning' : 'missing',
+    },
+    {
+      label: 'Forecast',
+      value: forecastReady ? `${forecasts.length} entries` : 'Pending',
+      state: forecastReady ? 'ready' : 'missing',
+    },
+  ] as const;
 
   const overview = (
     <div className="space-y-8">
@@ -555,7 +817,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
           <DepartmentPicker
             departments={departments}
             selectedId={selectedDeptId}
-            onSelect={setSelectedDeptId}
+            onSelect={handleDepartmentSelect}
+            isLoading={isDepartmentSwitching}
           />
         }
       />
@@ -563,10 +826,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
         <ExecutiveMetric
           label="Unit Ledger Items"
-          value={transactions.length}
+          value={transactionCount}
           note={selectedDepartment ? selectedDepartment.department_name : 'Department selected'}
           accent="positive"
           icon={WalletCards}
+          isLoading={departmentLoading}
         />
         <ExecutiveMetric
           label="Actual Spending"
@@ -574,6 +838,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
           note="Current imported spend"
           accent="negative"
           icon={CircleDollarSign}
+          isLoading={departmentLoading}
         />
         <ExecutiveMetric
           label="Monthly Budget"
@@ -581,53 +846,78 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
           note="Based on annual allocation"
           accent="neutral"
           icon={TrendingUp}
+          isLoading={departmentLoading}
         />
         <ExecutiveMetric
           label="Data Integrity"
-          value={`${Math.max(88, 100 - anomalies.length * 2.1).toFixed(1)}%`}
-          note={`${anomalies.length} active anomalies`}
+          value={`${Math.max(88, 100 - activeAnomalyCount * 2.1).toFixed(1)}%`}
+          note={`${activeAnomalyCount} active anomalies`}
           accent="positive"
           icon={ShieldCheck}
+          isLoading={departmentLoading}
         />
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[1.4fr,0.8fr,0.8fr] gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-[1.35fr,0.65fr] gap-6">
         <div className={`${shellCard} p-7`}>
-          <SectionKicker title="Spending Momentum" subtitle="Recent actuals versus expected department behavior." />
+          <SectionKicker title="Spending Momentum" subtitle="Recent monthly spend for the selected department." />
           <div className="h-[340px] mt-6">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={spendTrend}>
-                <defs>
-                  <linearGradient id="spendArea" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#3B82F6" stopOpacity={0.32} />
-                    <stop offset="100%" stopColor="#3B82F6" stopOpacity={0.02} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="4 6" stroke="#dbe7ff" vertical={false} />
-                <XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fill: '#94A3B8', fontSize: 12, fontWeight: 700 }} />
-                <YAxis tickLine={false} axisLine={false} tick={{ fill: '#94A3B8', fontSize: 12 }} />
-                <Tooltip contentStyle={{ borderRadius: 20, borderColor: '#dbeafe', boxShadow: '0 12px 40px rgba(59,130,246,0.14)' }} />
-                <Area type="monotone" dataKey="actual" stroke="#3B82F6" strokeWidth={4} fill="url(#spendArea)" />
-              </AreaChart>
-            </ResponsiveContainer>
+            {departmentLoading ? (
+              <ChartLoadingState label="Loading department spend" />
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={spendTrend}>
+                  <defs>
+                    <linearGradient id="spendArea" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#3B82F6" stopOpacity={0.32} />
+                      <stop offset="100%" stopColor="#3B82F6" stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="4 6" stroke="#dbe7ff" vertical={false} />
+                  <XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fill: '#94A3B8', fontSize: 12, fontWeight: 700 }} />
+                  <YAxis tickLine={false} axisLine={false} tick={{ fill: '#94A3B8', fontSize: 12 }} />
+                  <Tooltip contentStyle={{ borderRadius: 20, borderColor: '#dbeafe', boxShadow: '0 12px 40px rgba(59,130,246,0.14)' }} />
+                  <Area type="monotone" dataKey="actual" stroke="#3B82F6" strokeWidth={4} fill="url(#spendArea)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </div>
 
-        <CalloutCard
-          tone="dark"
-          eyebrow="Reconciliation Index"
-          title={`${insightScore}%`}
-          description="Platform-wide anomaly resolution efficiency and budget alignment quality."
-          footer="Forecast discipline is trending upward."
-        />
+        <div className={`${shellCard} p-7`}>
+          <SectionKicker title="Department Snapshot" subtitle="Current data, budget, and risk state." />
+          <div className="mt-6 space-y-3">
+            <DataPill label="Selected" value={selectedDepartment?.department_name || 'None'} isLoading={departmentLoading} />
+            <DataPill label="Latest Entry" value={latestTransactionLabel} isLoading={departmentLoading} />
+            <DataPill label="Budget Used" value={`${budgetUtilization.toFixed(1)}%`} isLoading={departmentLoading} />
+            <DataPill label="Uncategorized" value={categorizationSummary?.uncategorized || 0} isLoading={departmentLoading} />
+          </div>
+        </div>
+      </div>
 
-        <CalloutCard
-          tone="green"
-          eyebrow="AI Savings Potential"
-          title={`TK ${Math.max(14200, Math.round(projectedSpend * 0.08)).toLocaleString()}`}
-          description="Potential quarterly savings visible from unnecessary or duplicate spending patterns."
-          footer="Estimated savings"
-        />
+      <div className={`${shellCard} p-7`}>
+        <SectionKicker title="Spend Mix" subtitle="Top approved expense categories by amount." />
+        <div className="mt-6 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {departmentLoading ? (
+            <>
+              <SkeletonLine className="h-20 rounded-2xl" />
+              <SkeletonLine className="h-20 rounded-2xl" />
+              <SkeletonLine className="h-20 rounded-2xl" />
+              <SkeletonLine className="h-20 rounded-2xl" />
+            </>
+          ) : expenseCategoryBreakdown.slice(0, 4).map((category) => (
+            <div key={category.name} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">{category.name}</p>
+              <p className="mt-2 text-lg font-black text-slate-950">TK {Math.round(category.amount).toLocaleString()}</p>
+              <p className="mt-1 text-xs font-semibold text-slate-500">{category.count} transaction{category.count === 1 ? '' : 's'}</p>
+            </div>
+          ))}
+          {!departmentLoading && !expenseCategoryBreakdown.length && (
+            <div className="col-span-full rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-5 py-6 text-center text-sm font-semibold text-slate-400">
+              No approved spend mix available yet.
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -635,61 +925,245 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const expenseCategoryReview = (
     <div className={`${shellCard} p-7`}>
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <SectionKicker title="Expense Category Review" subtitle="Approve Gemini suggestions before they become department categories." />
+        <SectionKicker title="Gemini Suggestions Approval" subtitle="Review pending suggestions and approved categorization decisions." />
         <div className="grid grid-cols-3 gap-3 text-right">
-          <DataPill label="Groups" value={expenseGroups.length} />
-          <DataPill label="Pending" value={expenseGroups.filter((group) => group.expense_category_status === 'pending_review').length} />
-          <DataPill label="Approved" value={expenseGroups.filter((group) => group.expense_category_status === 'approved').length} />
+          <DataPill label="Groups" value={expenseGroups.length} isLoading={controlDataLoading} />
+          <DataPill label="Pending" value={pendingExpenseGroups.length} isLoading={controlDataLoading} />
+          <DataPill label="Approved" value={approvedExpenseGroups.length} isLoading={controlDataLoading} />
         </div>
       </div>
 
-      <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-[1.1fr,0.9fr]">
-        <div className="overflow-x-auto rounded-[26px] border border-slate-200">
-          <table className="w-full min-w-[920px] text-left">
-            <thead className="bg-slate-50">
-              <tr className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">
-                <th className="px-5 py-4">Group</th>
-                <th className="px-5 py-4">Samples</th>
-                <th className="px-5 py-4">Suggestion</th>
-                <th className="px-5 py-4">Approve As</th>
-                <th className="px-5 py-4">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {expenseGroups.slice(0, 20).map((group) => {
-                const key = expenseGroupKey(group);
-                const selectedCategory = categoryDrafts[key] ?? group.suggested_category_name ?? group.expense_category_name ?? '';
-                const suggestionAlreadyInCatalog = expenseCategories.some((category) => category.name === group.suggested_category_name);
-                return (
-                  <tr key={key} className="border-t border-slate-100 align-top text-sm text-slate-700">
+      <div className="mt-6 inline-flex rounded-2xl border border-slate-200 bg-slate-50 p-1">
+        {[
+          { id: 'ledger' as const, label: 'Uploaded Ledger', count: uploadBatches.length },
+          { id: 'pending' as const, label: 'Pending Approval', count: pendingExpenseGroups.length },
+          { id: 'approved' as const, label: 'Approved', count: approvedExpenseGroups.length },
+        ].map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setExpenseReviewTab(tab.id)}
+            className={`rounded-xl px-4 py-2 text-sm font-black transition ${expenseReviewTab === tab.id ? 'bg-slate-950 text-white shadow-sm' : 'text-slate-500 hover:bg-white hover:text-slate-800'}`}
+          >
+            {tab.label} ({tab.count})
+          </button>
+        ))}
+      </div>
+
+      {expenseReviewTab === 'ledger' ? (
+        <div className="mt-5 space-y-5">
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+            <DataPill label="Uploads" value={uploadBatches.length} isLoading={controlDataLoading} />
+            <DataPill label="Viewable Files" value={ledgerBatchesWithTransactions.length} isLoading={controlDataLoading} />
+            <DataPill label="Skipped Duplicates" value={duplicateOnlyBatches.length} isLoading={controlDataLoading} />
+          </div>
+
+          <div className="rounded-[26px] border border-slate-200 bg-slate-50 p-5">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-500">Ledger Scope</p>
+                <p className="mt-2 text-xl font-black text-slate-950">View transactions from all files or one upload.</p>
+              </div>
+              <div className="w-full lg:w-96">
+                <label className="block text-[11px] font-black uppercase tracking-[0.18em] text-slate-400 mb-2">Uploaded File</label>
+                <select
+                  value={ledgerBatchFilter}
+                  onChange={(event) => {
+                    setLedgerBatchFilter(event.target.value);
+                    setLedgerOffset(0);
+                  }}
+                  className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700"
+                >
+                  <option value="all">All uploads with saved transactions</option>
+                  {ledgerBatchesWithTransactions.map((batch) => (
+                    <option key={batch.upload_batch_id} value={batch.upload_batch_id}>
+                      {batch.source_file_name} ({batch.transaction_count} rows)
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+              <table className="w-full min-w-[940px] text-left">
+                <thead className="bg-slate-50">
+                  <tr className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">
+                    <th className="px-5 py-4">File</th>
+                    <th className="px-5 py-4">Uploaded</th>
+                    <th className="px-5 py-4">Rows</th>
+                    <th className="px-5 py-4">Saved</th>
+                    <th className="px-5 py-4">Date Range</th>
+                    <th className="px-5 py-4">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {controlDataLoading ? (
+                    <tr><td colSpan={6} className="px-5 py-6"><SkeletonLine className="h-5 w-full" /></td></tr>
+                  ) : uploadBatches.map((batch) => {
+                    const duplicateOnly = batch.row_count > 0 && batch.transaction_count === 0;
+                    return (
+                      <tr key={batch.upload_batch_id} className="border-t border-slate-100 text-sm text-slate-700">
+                        <td className="px-5 py-4 font-black text-slate-950">{batch.source_file_name}</td>
+                        <td className="px-5 py-4 font-semibold text-slate-500">{formatDateTime(batch.uploaded_at)}</td>
+                        <td className="px-5 py-4 font-bold">{batch.row_count}</td>
+                        <td className="px-5 py-4 font-bold text-blue-700">{batch.transaction_count}</td>
+                        <td className="px-5 py-4 font-semibold text-slate-500">
+                          {batch.first_transaction_date || 'N/A'} to {batch.last_transaction_date || 'N/A'}
+                        </td>
+                        <td className="px-5 py-4">
+                          <span className={`rounded-full px-3 py-1 text-xs font-black uppercase tracking-[0.12em] ${duplicateOnly ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                            {duplicateOnly ? 'Skipped duplicate upload' : batch.status.replaceAll('_', ' ')}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {!controlDataLoading && !uploadBatches.length && (
+                    <tr>
+                      <td colSpan={6} className="px-5 py-10 text-center text-sm font-semibold text-slate-400">No uploaded ledger files yet.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-[26px] border border-slate-200">
+            <table className="w-full min-w-[980px] text-left">
+              <thead className="bg-slate-50">
+                <tr className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">
+                  <th className="px-5 py-4">Date</th>
+                  <th className="px-5 py-4">Description</th>
+                  <th className="px-5 py-4">Amount</th>
+                  <th className="px-5 py-4">Group</th>
+                  <th className="px-5 py-4">Expense Type</th>
+                  <th className="px-5 py-4">Necessity</th>
+                  <th className="px-5 py-4">Source File</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ledgerLoading ? (
+                  <tr><td colSpan={7} className="px-5 py-8"><SkeletonLine className="h-5 w-full" /></td></tr>
+                ) : ledgerRows.map((transaction) => (
+                  <tr key={transaction.transaction_id} className="border-t border-slate-100 text-sm text-slate-700">
+                    <td className="px-5 py-4 font-semibold">{formatDate(transaction.transaction_date)}</td>
                     <td className="px-5 py-4">
-                      <p className="font-black text-slate-950">{group.group_name || `Group ${group.group_no || ''}`}</p>
-                      <p className="mt-1 text-xs font-semibold text-slate-500">{group.chart_acc_head_name}</p>
-                      <span className={`mt-3 inline-block rounded-full px-3 py-1 text-[11px] font-black uppercase tracking-[0.12em] ${expenseStatusClass(group.expense_category_status)}`}>
-                        {group.expense_category_status.replaceAll('_', ' ')}
+                      <p className="font-bold text-slate-900">{transaction.description || 'No description'}</p>
+                      <p className="mt-1 text-xs font-semibold text-slate-400">{transaction.chart_acc_head || transaction.cleaned_chart_acc_head || 'No account head'}</p>
+                    </td>
+                    <td className="px-5 py-4 font-bold">TK {Number(transaction.amount || 0).toLocaleString()}</td>
+                    <td className="px-5 py-4">{transaction.group_name || 'Not grouped'}</td>
+                    <td className="px-5 py-4">{transaction.expense_category_name || 'Unassigned'}</td>
+                    <td className="px-5 py-4">
+                      <span className={`rounded-full px-3 py-1 text-xs font-bold border ${COLORS[transaction.category || 'uncategorized'] || COLORS.uncategorized}`}>
+                        {transaction.category || 'uncategorized'}
                       </span>
                     </td>
-                    <td className="px-5 py-4">
-                      <p className="mb-2 text-xs font-black uppercase tracking-[0.16em] text-slate-400">{group.transaction_count} transaction{group.transaction_count === 1 ? '' : 's'}</p>
-                      <div className="space-y-2">
-                        {group.samples.slice(0, 3).map((sample, index) => (
-                          <p key={`${key}-sample-${index}`} className="line-clamp-2 text-xs font-semibold leading-5 text-slate-600">
-                            {sample.description || sample.chart_acc_head || 'No description'} · TK {Number(sample.amount || 0).toLocaleString()}
-                          </p>
-                        ))}
-                        {!group.samples.length && <p className="text-xs font-semibold text-slate-400">No samples available.</p>}
-                      </div>
+                    <td className="px-5 py-4 font-semibold text-slate-500">{transaction.source_file_name || 'N/A'}</td>
+                  </tr>
+                ))}
+                {!ledgerLoading && !ledgerRows.length && (
+                  <tr>
+                    <td colSpan={7} className="px-5 py-10 text-center text-sm font-semibold text-slate-400">
+                      No transactions found for this ledger selection.
                     </td>
-                    <td className="px-5 py-4">
-                      <p className="font-black text-slate-950">{group.suggested_category_name || group.expense_category_name || 'Not suggested'}</p>
-                      {group.suggested_category_confidence !== null && (
-                        <p className="mt-1 text-xs font-bold text-blue-600">{Math.round(group.suggested_category_confidence * 100)}% confidence</p>
-                      )}
-                      {group.suggested_category_is_new && (
-                        <p className="mt-2 rounded-2xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">New category needs approval</p>
-                      )}
-                      {group.suggested_category_reason && <p className="mt-2 line-clamp-3 text-xs leading-5 text-slate-500">{group.suggested_category_reason}</p>}
-                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+            <div className="flex flex-col gap-3 border-t border-slate-100 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm font-semibold text-slate-500">
+                Showing {ledgerStart}-{ledgerEnd} of {ledgerTotal}
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setLedgerOffset((current) => Math.max(0, current - LEDGER_PAGE_SIZE))}
+                  disabled={ledgerLoading || ledgerOffset === 0}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLedgerOffset((current) => current + LEDGER_PAGE_SIZE)}
+                  disabled={ledgerLoading || ledgerEnd >= ledgerTotal}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+      <div className="mt-5 overflow-x-auto rounded-[26px] border border-slate-200">
+        <table className="w-full min-w-[920px] text-left">
+          <thead className="bg-slate-50">
+            <tr className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">
+              <th className="px-5 py-4">Group</th>
+              <th className="px-5 py-4">Samples</th>
+              <th className="px-5 py-4">{expenseReviewTab === 'pending' ? 'Gemini Suggestion' : 'Approved Category'}</th>
+              {expenseReviewTab === 'pending' && <th className="px-5 py-4">Approve As</th>}
+              <th className="px-5 py-4">{expenseReviewTab === 'pending' ? 'Action' : 'Status'}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {controlDataLoading ? (
+              <tr className="border-t border-slate-100">
+                <td colSpan={expenseReviewTab === 'pending' ? 5 : 4} className="px-5 py-8">
+                  <div className="space-y-3">
+                    <SkeletonLine className="h-5 w-48" />
+                    <SkeletonLine className="h-4 w-full" />
+                    <SkeletonLine className="h-4 w-3/4" />
+                  </div>
+                </td>
+              </tr>
+            ) : visibleExpenseGroups.map((group) => {
+              const key = expenseGroupKey(group);
+              const selectedCategory = categoryDrafts[key] ?? group.suggested_category_name ?? group.expense_category_name ?? '';
+              const suggestionAlreadyInCatalog = expenseCategories.some((category) => category.name === group.suggested_category_name);
+              const isApprovingGroup = expenseGroupAction?.key === key && expenseGroupAction.action === 'approve';
+              const isRejectingGroup = expenseGroupAction?.key === key && expenseGroupAction.action === 'reject';
+              const isGroupActionBusy = expenseGroupAction?.key === key;
+              return (
+                <tr key={key} className="border-t border-slate-100 align-top text-sm text-slate-700">
+                  <td className="px-5 py-4">
+                    <p className="font-black text-slate-950">{group.group_name || `Group ${group.group_no || ''}`}</p>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">{group.chart_acc_head_name}</p>
+                    <span className={`mt-3 inline-block rounded-full px-3 py-1 text-[11px] font-black uppercase tracking-[0.12em] ${expenseStatusClass(group.expense_category_status)}`}>
+                      {group.expense_category_status.replaceAll('_', ' ')}
+                    </span>
+	                  </td>
+	                  <td className="px-5 py-4">
+	                    <button
+	                      type="button"
+	                      onClick={() => handleViewExpenseGroupTransactions(group)}
+	                      className="mb-3 inline-flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-blue-700 transition hover:border-blue-200 hover:bg-blue-100"
+	                    >
+	                      <Eye size={14} />
+	                      {group.transaction_count} transaction{group.transaction_count === 1 ? '' : 's'}
+	                    </button>
+	                    <div className="space-y-2">
+                      {group.samples.slice(0, 3).map((sample, index) => (
+                        <p key={`${key}-sample-${index}`} className="line-clamp-2 text-xs font-semibold leading-5 text-slate-600">
+                          {sample.description || sample.chart_acc_head || 'No description'} · TK {Number(sample.amount || 0).toLocaleString()}
+                        </p>
+                      ))}
+                      {!group.samples.length && <p className="text-xs font-semibold text-slate-400">No samples available.</p>}
+                    </div>
+                  </td>
+                  <td className="px-5 py-4">
+                    <p className="font-black text-slate-950">{group.suggested_category_name || group.expense_category_name || 'Not suggested'}</p>
+                    {group.suggested_category_confidence !== null && (
+                      <p className="mt-1 text-xs font-bold text-blue-600">{Math.round(group.suggested_category_confidence * 100)}% confidence</p>
+                    )}
+                    {group.suggested_category_is_new && (
+                      <p className="mt-2 rounded-2xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">New category needs approval</p>
+                    )}
+                    {group.suggested_category_reason && <p className="mt-2 line-clamp-3 text-xs leading-5 text-slate-500">{group.suggested_category_reason}</p>}
+                  </td>
+                  {expenseReviewTab === 'pending' && (
                     <td className="px-5 py-4">
                       <select
                         value={selectedCategory}
@@ -706,45 +1180,58 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
                         ))}
                       </select>
                     </td>
-                    <td className="px-5 py-4">
+                  )}
+                  <td className="px-5 py-4">
+                    {expenseReviewTab === 'pending' ? (
                       <div className="flex flex-col gap-2">
                         <button
                           type="button"
                           onClick={() => handleApproveExpenseGroup(group)}
-                          disabled={!selectedCategory}
+                          disabled={!selectedCategory || isGroupActionBusy}
                           className="inline-flex items-center justify-center gap-2 rounded-2xl bg-slate-950 px-4 py-3 text-xs font-black text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
                         >
-                          <Check size={15} />
-                          Approve
+                          {isApprovingGroup ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" /> : <Check size={15} />}
+                          {isApprovingGroup ? 'Approving...' : 'Approve'}
                         </button>
-                        {group.expense_category_status === 'pending_review' && (
-                          <button
-                            type="button"
-                            onClick={() => handleRejectExpenseGroup(group)}
-                            className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 px-4 py-3 text-xs font-black text-slate-500 transition hover:bg-slate-50"
-                          >
-                            <X size={15} />
-                            Reject
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleRejectExpenseGroup(group)}
+                          disabled={isGroupActionBusy}
+                          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 px-4 py-3 text-xs font-black text-slate-500 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {isRejectingGroup ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-slate-700" /> : <X size={15} />}
+                          {isRejectingGroup ? 'Rejecting...' : 'Reject'}
+                        </button>
                       </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          {!expenseGroups.length && (
-            <div className="p-8 text-center">
-              <p className="font-black text-slate-950">No groups ready yet</p>
-              <p className="mt-2 text-sm font-semibold text-slate-500">Upload transactions, run grouping, then ask Gemini for category suggestions.</p>
-            </div>
-          )}
-        </div>
-
-        <div className="rounded-[26px] border border-slate-200 bg-slate-50 p-5">
+                    ) : (
+                      <span className="inline-flex rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-emerald-700">
+                        Approved
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {!controlDataLoading && !visibleExpenseGroups.length && (
+          <div className="p-8 text-center">
+            <p className="font-black text-slate-950">
+              {expenseReviewTab === 'pending' ? 'No pending approvals' : 'No approved suggestions yet'}
+            </p>
+            <p className="mt-2 text-sm font-semibold text-slate-500">
+              {expenseReviewTab === 'pending'
+                ? 'Run expense category suggestions to create pending decisions.'
+                : 'Approved Gemini categorization decisions will appear here.'}
+            </p>
+          </div>
+        )}
+      </div>
+      )}
+      {expenseReviewTab === 'approved' && (
+        <div className="mt-5 rounded-[26px] border border-slate-200 bg-slate-50 p-5">
           <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-500">Approved Spend Mix</p>
-          <div className="mt-5 space-y-3">
+          <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
             {expenseCategoryBreakdown.slice(0, 8).map((category) => (
               <div key={category.name} className="rounded-2xl bg-white px-4 py-3 shadow-sm">
                 <div className="flex items-center justify-between gap-3">
@@ -757,7 +1244,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
             {!expenseCategoryBreakdown.length && <p className="text-sm font-semibold text-slate-500">Approved expense categories will appear here.</p>}
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 
@@ -768,73 +1255,116 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         title="Department Operations"
         description="Manage department data, refresh forecasts, and keep financial operations up to date."
       />
-      <div className="grid grid-cols-1 xl:grid-cols-[0.88fr,1.12fr] gap-6">
-        <form className={`${shellCard} p-7 bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.12),_transparent_45%),white]`} onSubmit={handleUpload}>
-          <SectionKicker title="Import Ledger File" subtitle="Upload departmental transactions." />
-          <div className="mt-6 space-y-4">
-            <div className="rounded-[26px] border border-slate-200 bg-slate-50 p-4">
-              <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Department</label>
-              <select value={selectedDeptId} onChange={(e) => setSelectedDeptId(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700">
-                {departments.map((department) => <option key={department.department_id} value={department.department_id}>{department.department_name}</option>)}
-              </select>
-            </div>
-            <div className="rounded-[26px] border border-slate-200 bg-slate-50 p-4">
-              <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Annual Budget</label>
-              <div className="flex flex-col gap-3 sm:flex-row">
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={budgetDraft}
-                  onChange={(event) => setBudgetDraft(event.target.value.replace(/[^\d.]/g, ''))}
-                  className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700"
-                  placeholder="Annual budget"
-                />
-                <button
-                  type="button"
-                  onClick={handleBudgetUpdate}
-                  disabled={!selectedDepartment || savingBudget}
-                  className="rounded-2xl bg-blue-600 px-5 py-3 font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-                >
-                  {savingBudget ? 'Updating...' : 'Update'}
-                </button>
-              </div>
-              <p className="mt-2 text-xs font-semibold text-slate-500">
-                Used this year: TK {Number(selectedDepartment?.used_budget_current_year || 0).toLocaleString()} ({Number(selectedDepartment?.annual_budget_utilization_pct || 0).toFixed(1)}%)
-              </p>
-            </div>
-            <label className="block rounded-[26px] border border-dashed border-blue-200 bg-blue-50/70 p-6 cursor-pointer transition hover:border-blue-400 hover:bg-blue-50">
-              <div className="flex items-center gap-4">
-                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-blue-600 shadow-sm">
-                  <Upload size={22} />
-                </div>
-                <div>
-                  <p className="font-bold text-slate-900">{file ? file.name : 'Drop CSV or Excel ledger here'}</p>
-                  <p className="text-sm text-slate-500 mt-1">Accepted formats: `.csv`, `.xls`, `.xlsx`</p>
-                </div>
-              </div>
-              <input type="file" accept=".csv,.xls,.xlsx" onChange={(e) => setFile(e.target.files?.[0] || null)} className="hidden" />
-            </label>
-            <button className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 px-5 py-4 font-bold text-white shadow-[0_20px_40px_rgba(15,23,42,0.15)]">
-              <FileUp size={18} />
-              Upload Transactions
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <div className={`${shellCard} p-5`}>
+          <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Department</label>
+          <DepartmentPicker
+            departments={departments}
+            selectedId={selectedDeptId}
+            onSelect={handleDepartmentSelect}
+            isLoading={isDepartmentSwitching}
+          />
+        </div>
+        <div className={`${shellCard} p-5`}>
+          <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Annual Budget</label>
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <input
+              type="text"
+              inputMode="decimal"
+              value={budgetDraft}
+              onChange={(event) => setBudgetDraft(event.target.value.replace(/[^\d.]/g, ''))}
+              className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700"
+              placeholder="Annual budget"
+            />
+            <button
+              type="button"
+              onClick={handleBudgetUpdate}
+              disabled={!selectedDepartment || savingBudget}
+              className="rounded-2xl bg-blue-600 px-5 py-3 font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              {savingBudget ? 'Updating...' : 'Update'}
             </button>
           </div>
-        </form>
+          <p className="mt-2 text-xs font-semibold text-slate-500">
+            Used this year: TK {Number(selectedDepartment?.used_budget_current_year || 0).toLocaleString()} ({Number(selectedDepartment?.annual_budget_utilization_pct || 0).toFixed(1)}%)
+          </p>
+        </div>
+      </div>
 
-        <div className={`${shellCard} p-7 bg-[radial-gradient(circle_at_top_right,_rgba(16,185,129,0.16),_transparent_40%),white]`}>
-          <SectionKicker title="Operational Controls" subtitle="Choose the forecast horizon and run department actions." />
-          <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="rounded-[26px] border border-slate-200 bg-slate-50 p-5">
-              <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-500">Budget Forecast</p>
-              <p className="mt-3 text-2xl font-black tracking-tight text-slate-950">Forecast Settings</p>
-              <p className="mt-2 text-sm text-slate-500">Set how far ahead you want to project department spending.</p>
-              <div className="mt-5">
+      <form className={`${shellCard} p-7 bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.12),_transparent_45%),white]`} onSubmit={handleUpload}>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr,220px] lg:items-stretch">
+          <label className="block rounded-[26px] border border-dashed border-blue-200 bg-blue-50/70 p-6 cursor-pointer transition hover:border-blue-400 hover:bg-blue-50">
+            <div className="flex items-center gap-4">
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-blue-600 shadow-sm">
+                <Upload size={22} />
+              </div>
+              <div>
+                <p className="font-bold text-slate-900">{file ? file.name : 'Drop CSV or Excel ledger here'}</p>
+                <p className="text-sm text-slate-500 mt-1">Accepted formats: `.csv`, `.xls`, `.xlsx`</p>
+              </div>
+            </div>
+            <input type="file" accept=".csv,.xls,.xlsx" onChange={(e) => setFile(e.target.files?.[0] || null)} className="hidden" />
+          </label>
+          <button className="inline-flex h-full min-h-[92px] w-full items-center justify-center gap-2 rounded-[26px] bg-slate-950 px-5 py-4 font-bold text-white shadow-[0_20px_40px_rgba(15,23,42,0.15)] transition hover:bg-slate-800">
+            <FileUp size={18} />
+            Upload Transactions
+          </button>
+        </div>
+      </form>
+
+      <div className={`${shellCard} p-7 bg-[radial-gradient(circle_at_top_right,_rgba(16,185,129,0.16),_transparent_40%),white]`}>
+          <SectionKicker title="Run Department Actions" subtitle="Run department actions in order." />
+          <div className="mt-6 grid grid-cols-1 gap-4">
+            <WorkflowStep
+              step="1"
+              title="Run Grouping"
+              detail={hasTransactions ? `${transactionCount.toLocaleString()} transactions available` : 'Upload transactions first'}
+              status={hasGroups ? 'Done' : hasTransactions ? 'Ready' : 'Needs upload'}
+              icon={BarChart3}
+              disabled={!hasTransactions || controlDataLoading}
+              onClick={() => triggerAction('group')}
+            />
+            <WorkflowStep
+              step="2"
+              title="Suggest Expense Categories"
+              detail={hasGroups ? `${Number(groupingStats?.total_groups || 0).toLocaleString()} groups ready` : 'Run grouping first'}
+              status={pendingExpenseReviews ? `${pendingExpenseReviews} pending` : hasGroups ? 'Ready' : 'Waiting'}
+              icon={Sparkles}
+              disabled={!hasGroups || controlDataLoading}
+              onClick={() => triggerAction('expense')}
+            />
+            <WorkflowStep
+              step="3"
+              title="Run Necessity Categorization"
+              detail={categorizationCoverage ? `${categorizationCoverage}% categorized` : 'Transactions are uncategorized'}
+              status={categorizationCoverage >= 80 ? 'Done' : hasTransactions ? 'Ready' : 'Needs upload'}
+              icon={CheckCircle2}
+              disabled={!hasTransactions || controlDataLoading}
+              onClick={() => triggerAction('categorize')}
+            />
+          </div>
+
+          <div className="mt-6 rounded-[26px] border border-slate-200 bg-slate-50 p-5">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-500">Budget Forecast</p>
+                <p className="mt-2 text-2xl font-black tracking-tight text-slate-950">Forecast Setup</p>
+              </div>
+              <PipelineButton
+                label="Forecast Budget"
+                icon={Sparkles}
+                onClick={() => triggerAction('forecast')}
+                disabled={!hasTransactions || !isForecastSourceReady(sourceMode, selectedBatchId, dateFrom, dateTo)}
+              />
+            </div>
+            <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div>
                 <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Months Ahead</label>
                 <select value={monthsAhead} onChange={(e) => setMonthsAhead(Number(e.target.value))} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700">
                   {[1, 2, 3, 6].map((value) => <option key={value} value={value}>{value} month{value > 1 ? 's' : ''}</option>)}
                 </select>
               </div>
-              <div className="mt-5">
+              <div>
                 <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Forecast Source</label>
                 <select value={sourceMode} onChange={(e) => setSourceMode(e.target.value as ForecastSourceMode)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700">
                   <option value="latest_batch">Latest Upload Batch</option>
@@ -843,53 +1373,38 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
                   <option value="date_range">Custom Date Range</option>
                 </select>
               </div>
-              {sourceMode === 'upload_batch' && (
-                <div className="mt-5">
-                  <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Upload Batch</label>
-                  <select value={selectedBatchId} onChange={(e) => setSelectedBatchId(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700">
-                    {uploadBatches.map((batch) => (
-                      <option key={batch.upload_batch_id} value={batch.upload_batch_id}>
-                        {batch.source_file_name} ({batch.transaction_count} rows)
-                      </option>
-                    ))}
-                  </select>
-                  {selectedUploadBatch && (
-                    <p className="mt-2 text-xs font-medium text-slate-500">
-                      Range: {selectedUploadBatch.first_transaction_date || 'N/A'} to {selectedUploadBatch.last_transaction_date || 'N/A'}
-                    </p>
-                  )}
-                </div>
-              )}
-              {sourceMode === 'date_range' && (
-                <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
-                  <div>
-                    <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Start Date</label>
-                    <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700" />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">End Date</label>
-                    <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700" />
-                  </div>
-                </div>
-              )}
             </div>
-            <div className="rounded-[26px] bg-slate-950 p-5 text-white shadow-[0_24px_50px_rgba(15,23,42,0.24)]">
-              <p className="text-[11px] font-black uppercase tracking-[0.22em] text-blue-200">Workflow</p>
-              <div className="mt-4 space-y-3 text-sm text-slate-300">
-                <p>Grouping organizes related account activity.</p>
-                <p>Expense categorization uses Gemini suggestions after grouping.</p>
-                <p>Necessity categorization separates necessary and unnecessary spend.</p>
+            {sourceMode === 'upload_batch' && (
+              <div className="mt-5">
+                <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Upload Batch</label>
+                <select value={selectedBatchId} onChange={(e) => setSelectedBatchId(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700">
+                  {uploadBatches.map((batch) => (
+                    <option key={batch.upload_batch_id} value={batch.upload_batch_id}>
+                      {batch.source_file_name} ({batch.transaction_count} rows)
+                    </option>
+                  ))}
+                </select>
+                {selectedUploadBatch && (
+                  <p className="mt-2 text-xs font-medium text-slate-500">
+                    Range: {selectedUploadBatch.first_transaction_date || 'N/A'} to {selectedUploadBatch.last_transaction_date || 'N/A'}
+                  </p>
+                )}
               </div>
-            </div>
-          </div>
-          <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-            <PipelineButton label="Run Grouping" icon={BarChart3} onClick={() => triggerAction('group')} />
-            <PipelineButton label="Suggest Expense Categories" icon={Sparkles} onClick={() => triggerAction('expense')} />
-            <PipelineButton label="Run Necessity Categorization" icon={CheckCircle2} onClick={() => triggerAction('categorize')} />
-            <PipelineButton label="Forecast Budget" icon={Sparkles} onClick={() => triggerAction('forecast')} />
+            )}
+            {sourceMode === 'date_range' && (
+              <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div>
+                  <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Start Date</label>
+                  <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700" />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">End Date</label>
+                  <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700" />
+                </div>
+              </div>
+            )}
           </div>
           {status && <p className="mt-5 text-sm font-semibold text-blue-700">{status}</p>}
-        </div>
       </div>
       {expenseCategoryReview}
     </div>
@@ -915,7 +1430,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
           <div className="mt-6 space-y-4">
             <div className="rounded-[26px] border border-slate-200 bg-slate-50 p-4">
               <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Department</label>
-              <select value={selectedDeptId} onChange={(event) => setSelectedDeptId(event.target.value)} disabled={!departments.length} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100">
+              <select value={selectedDeptId} onChange={(event) => handleDepartmentSelect(event.target.value)} disabled={!departments.length} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100">
                 {!departments.length && <option value="">No departments loaded</option>}
                 {departments.map((department) => <option key={department.department_id} value={department.department_id}>{department.department_name}</option>)}
               </select>
@@ -1069,7 +1584,13 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         </div>
       </div>
 
-      {forensicMode === 'rule'
+      {transactionsLoading ? (
+        <div className={`${shellCard} p-7`}>
+          <div className="h-80">
+            <ChartLoadingState label="Loading forensic review" />
+          </div>
+        </div>
+      ) : forensicMode === 'rule'
         ? ruleForensicView
         : <ForensicIntelligence department={selectedDepartment} transactions={transactions} />}
     </div>
@@ -1086,20 +1607,24 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         <div className={`${shellCard} p-7`}>
           <SectionKicker title="Budget Utilization by Business Unit" subtitle="Budget vs. realized spend across active departments." />
           <div className="h-[380px] mt-6">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={departmentBudgetData} barGap={12}>
-                <CartesianGrid strokeDasharray="4 6" stroke="#e2e8f0" vertical={false} />
-                <XAxis dataKey="name" tickLine={false} axisLine={false} tick={{ fill: '#94A3B8', fontSize: 12, fontWeight: 700 }} />
-                <YAxis tickLine={false} axisLine={false} tick={{ fill: '#94A3B8', fontSize: 12 }} />
-                <Tooltip contentStyle={{ borderRadius: 20, borderColor: '#dbeafe', boxShadow: '0 12px 40px rgba(15,23,42,0.10)' }} />
-                <Bar dataKey="budget" fill="#E8EEF8" radius={[10, 10, 0, 0]} />
-                <Bar dataKey="spend" radius={[10, 10, 0, 0]}>
-                  {departmentBudgetData.map((entry, index) => (
-                    <Cell key={`${entry.name}-${index}`} fill={entry.name === selectedDepartment?.department_name.split(' ').slice(0, 2).join(' ') ? '#3B82F6' : '#94A3B8'} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+            {departmentLoading ? (
+              <ChartLoadingState label="Loading budget utilization" />
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={departmentBudgetData} barGap={12}>
+                  <CartesianGrid strokeDasharray="4 6" stroke="#e2e8f0" vertical={false} />
+                  <XAxis dataKey="name" tickLine={false} axisLine={false} tick={{ fill: '#94A3B8', fontSize: 12, fontWeight: 700 }} />
+                  <YAxis tickLine={false} axisLine={false} tick={{ fill: '#94A3B8', fontSize: 12 }} />
+                  <Tooltip contentStyle={{ borderRadius: 20, borderColor: '#dbeafe', boxShadow: '0 12px 40px rgba(15,23,42,0.10)' }} />
+                  <Bar dataKey="budget" fill="#E8EEF8" radius={[10, 10, 0, 0]} />
+                  <Bar dataKey="spend" radius={[10, 10, 0, 0]}>
+                    {departmentBudgetData.map((entry, index) => (
+                      <Cell key={`${entry.name}-${index}`} fill={entry.name === selectedDepartment?.department_name.split(' ').slice(0, 2).join(' ') ? '#3B82F6' : '#94A3B8'} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </div>
 
@@ -1109,14 +1634,16 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
           title={forecastDiagnostics?.mape !== null && forecastDiagnostics?.mape !== undefined ? `${forecastDiagnostics.mape}%` : 'N/A'}
           description="Lower MAPE means the prediction pipeline is tracking actual spend more tightly."
           footer="Forecast quality"
+          isLoading={forecastLoading}
         />
 
         <CalloutCard
           tone="green"
           eyebrow="Savings Potential"
-          title={`TK ${Math.round((categorizationSummary?.unnecessary || 0) * 1200 + anomalies.length * 450).toLocaleString()}`}
+          title={`TK ${Math.round((categorizationSummary?.unnecessary || 0) * 1200 + activeAnomalyCount * 450).toLocaleString()}`}
           description="Potential reduction from unnecessary transactions and anomalies requiring remediation."
           footer="Estimated savings"
+          isLoading={departmentLoading}
         />
       </div>
     </div>
@@ -1131,33 +1658,56 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       />
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
-        <ExecutiveMetric label="Forecast Entries" value={forecasts.length} note="Serialized or live model output" accent="neutral" icon={Sparkles} />
-        <ExecutiveMetric label="Open Anomalies" value={anomalies.length} note="Needs attention" accent="negative" icon={AlertTriangle} />
-        <ExecutiveMetric label="Necessary" value={categorizationSummary?.necessary || 0} note="Spending marked essential" accent="positive" icon={CheckCircle2} />
-        <ExecutiveMetric label="Integrity" value={`${Math.max(88, 100 - anomalies.length * 2.1).toFixed(1)}%`} note={forecasts.length ? 'Forecast available' : 'Awaiting forecast'} accent="positive" icon={ShieldCheck} />
+        <ExecutiveMetric label="Forecast Entries" value={forecasts.length} note="Serialized or live model output" accent="neutral" icon={Sparkles} isLoading={forecastLoading} />
+        <ExecutiveMetric label="Open Anomalies" value={activeAnomalyCount} note="Needs attention" accent="negative" icon={AlertTriangle} isLoading={departmentLoading} />
+        <ExecutiveMetric label="Necessary" value={categorizationSummary?.necessary || 0} note="Spending marked essential" accent="positive" icon={CheckCircle2} isLoading={departmentLoading} />
+        <ExecutiveMetric label="Integrity" value={`${Math.max(88, 100 - activeAnomalyCount * 2.1).toFixed(1)}%`} note={forecasts.length ? 'Forecast available' : 'Awaiting forecast'} accent="positive" icon={ShieldCheck} isLoading={isDepartmentSwitching} />
+      </div>
+
+      <div className={`${shellCard} p-7`}>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <SectionKicker title="Data Readiness" subtitle="Department health before reporting and forecasting." />
+          <button
+            type="button"
+            onClick={() => setActivePath('/dept-control')}
+            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-blue-600 px-5 py-3 text-sm font-black text-white transition hover:bg-blue-700"
+          >
+            <ArrowRight size={17} />
+            Go to Dept Control
+          </button>
+        </div>
+        <div className="mt-6 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {dataReadiness.map((item) => (
+            <ReadinessCard key={item.label} label={item.label} value={item.value} state={item.state} isLoading={departmentLoading || controlDataLoading} />
+          ))}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[1.35fr,0.65fr] gap-6">
         <div className={`${shellCard} p-7`}>
           <SectionKicker title="Budget Forecast Curve" subtitle="Historical monthly spend extended into the prediction window." />
           <div className="h-[380px] mt-6">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={forecastChartData}>
-                <defs>
-                  <linearGradient id="forecastBand" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#60A5FA" stopOpacity={0.25} />
-                    <stop offset="100%" stopColor="#60A5FA" stopOpacity={0.02} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="4 6" stroke="#dbeafe" vertical={false} />
-                <XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fill: '#94A3B8', fontSize: 12, fontWeight: 700 }} />
-                <YAxis tickLine={false} axisLine={false} tick={{ fill: '#94A3B8', fontSize: 12 }} />
-                <Tooltip contentStyle={{ borderRadius: 20, borderColor: '#dbeafe', boxShadow: '0 12px 40px rgba(59,130,246,0.14)' }} />
-                <Area type="monotone" dataKey="upper" stroke="transparent" fill="url(#forecastBand)" />
-                <Area type="monotone" dataKey="actual" stroke="#1D4ED8" strokeWidth={4} fillOpacity={0} />
-                <Area type="monotone" dataKey="forecast" stroke="#60A5FA" strokeWidth={4} fillOpacity={0} />
-              </AreaChart>
-            </ResponsiveContainer>
+            {isDepartmentSwitching ? (
+              <ChartLoadingState label="Loading forecast curve" />
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={forecastChartData}>
+                  <defs>
+                    <linearGradient id="forecastBand" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#60A5FA" stopOpacity={0.25} />
+                      <stop offset="100%" stopColor="#60A5FA" stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="4 6" stroke="#dbeafe" vertical={false} />
+                  <XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fill: '#94A3B8', fontSize: 12, fontWeight: 700 }} />
+                  <YAxis tickLine={false} axisLine={false} tick={{ fill: '#94A3B8', fontSize: 12 }} />
+                  <Tooltip contentStyle={{ borderRadius: 20, borderColor: '#dbeafe', boxShadow: '0 12px 40px rgba(59,130,246,0.14)' }} />
+                  <Area type="monotone" dataKey="upper" stroke="transparent" fill="url(#forecastBand)" />
+                  <Area type="monotone" dataKey="actual" stroke="#1D4ED8" strokeWidth={4} fillOpacity={0} />
+                  <Area type="monotone" dataKey="forecast" stroke="#60A5FA" strokeWidth={4} fillOpacity={0} />
+                </AreaChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </div>
 
@@ -1165,11 +1715,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
           <div className={`${shellCard} p-7`}>
             <SectionKicker title="Forecast Summary" subtitle="Current forecast health and coverage." />
             <div className="mt-5 space-y-4">
-              <DataPill label="Forecast Status" value={forecasts.length ? 'Ready' : 'Pending'} />
-              <DataPill label="Source" value={sourceModeLabel} />
-              <DataPill label="Confidence" value={forecastDiagnostics?.mape !== null && forecastDiagnostics?.mape !== undefined ? `${Math.max(0, Math.round(100 - forecastDiagnostics.mape))}%` : 'N/A'} />
-              <DataPill label="MAPE" value={forecastDiagnostics?.mape !== null && forecastDiagnostics?.mape !== undefined ? `${forecastDiagnostics.mape}%` : 'N/A'} />
-              <DataPill label="Coverage" value={`${forecastDiagnostics?.train_months || 0} months`} />
+              <DataPill label="Forecast Status" value={forecasts.length ? 'Ready' : 'Pending'} isLoading={forecastLoading} />
+              <DataPill label="Source" value={sourceModeLabel} isLoading={forecastLoading} />
+              <DataPill label="Confidence" value={forecastDiagnostics?.mape !== null && forecastDiagnostics?.mape !== undefined ? `${Math.max(0, Math.round(100 - forecastDiagnostics.mape))}%` : 'N/A'} isLoading={forecastLoading} />
+              <DataPill label="MAPE" value={forecastDiagnostics?.mape !== null && forecastDiagnostics?.mape !== undefined ? `${forecastDiagnostics.mape}%` : 'N/A'} isLoading={forecastLoading} />
+              <DataPill label="Coverage" value={`${forecastDiagnostics?.train_months || 0} months`} isLoading={forecastLoading} />
             </div>
             {forecastDiagnostics?.notes && (
               <div className="mt-5 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-800">
@@ -1181,7 +1731,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
           <div className={`${shellCard} p-7`}>
             <SectionKicker title="Latest Forecasts" subtitle="Confidence-bounded projections." />
             <div className="mt-5 space-y-3">
-              {latestForecasts.map((forecast) => (
+              {forecastLoading ? (
+                <ForecastListSkeleton />
+              ) : latestForecasts.map((forecast) => (
                 <div key={forecast.forecast_id} className="rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-4">
                   <div className="flex items-start justify-between gap-4">
                     <div>
@@ -1195,7 +1747,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
                   </div>
                 </div>
               ))}
-              {!forecasts.length && <p className="text-sm text-slate-500">No forecasts yet. Run budget prediction for this department.</p>}
+              {!forecastLoading && !forecasts.length && <p className="text-sm text-slate-500">No forecasts yet. Run budget prediction for this department.</p>}
             </div>
           </div>
         </div>
@@ -1225,7 +1777,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
               </tr>
             </thead>
             <tbody>
-              {transactions.slice(0, 30).map((transaction) => (
+              {transactionsLoading ? (
+                <TransactionTableSkeleton />
+              ) : transactions.slice(0, 30).map((transaction) => (
                 <tr key={transaction.transaction_id} className="border-t border-slate-100 text-sm text-slate-700">
                   <td className="py-4 font-semibold">{new Date(transaction.transaction_date).toLocaleDateString()}</td>
                   <td className="py-4">
@@ -1280,10 +1834,119 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
                   : employeesView;
 
   const modalTransaction = selectedAnomaly ? transactionById.get(selectedAnomaly.transaction_id) || null : null;
+  const groupTransactionRows = groupTransactionPage?.items || [];
+  const groupTransactionTotal = groupTransactionPage?.total ?? selectedExpenseGroup?.transaction_count ?? 0;
+  const groupTransactionStart = groupTransactionTotal > 0 ? groupTransactionOffset + 1 : 0;
+  const groupTransactionEnd = Math.min(groupTransactionOffset + GROUP_TRANSACTION_PAGE_SIZE, groupTransactionTotal);
 
   return (
     <>
       <Layout user={user} onLogout={onLogout} activePath={activePath} onNavigate={setActivePath}>{content}</Layout>
+      {blockingAction && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/70 px-4 backdrop-blur-sm" role="status" aria-live="polite">
+          <div className="w-full max-w-md rounded-[32px] border border-white/10 bg-white p-8 text-center shadow-[0_30px_90px_rgba(15,23,42,0.4)]">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-blue-50">
+              <span className="h-9 w-9 animate-spin rounded-full border-4 border-blue-200 border-t-blue-600" />
+            </div>
+            <h2 className="mt-6 text-2xl font-black tracking-tight text-slate-950">{blockingAction.title}</h2>
+            <p className="mt-3 text-sm font-semibold leading-6 text-slate-500">{blockingAction.detail}</p>
+          </div>
+        </div>
+      )}
+      {selectedExpenseGroup && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 px-4 py-8 backdrop-blur-sm"
+          onClick={() => setSelectedExpenseGroup(null)}
+        >
+          <div
+            className="max-h-[92vh] w-full max-w-6xl overflow-hidden rounded-[32px] bg-white shadow-[0_30px_80px_rgba(15,23,42,0.35)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-slate-100 p-7">
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-[0.24em] text-blue-600">Group Transactions</p>
+                <h2 className="mt-2 text-3xl font-black tracking-[-0.04em] text-slate-950">
+                  {selectedExpenseGroup.group_name || `Group ${selectedExpenseGroup.group_no || ''}`}
+                </h2>
+                <p className="mt-2 text-sm font-semibold text-slate-500">
+                  {selectedExpenseGroup.chart_acc_head_name} | {groupTransactionTotal.toLocaleString()} transaction{groupTransactionTotal === 1 ? '' : 's'}
+                </p>
+              </div>
+              <button type="button" onClick={() => setSelectedExpenseGroup(null)} className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-100 text-slate-500 transition hover:bg-slate-200" aria-label="Close group transactions">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="max-h-[calc(92vh-132px)] overflow-y-auto p-7">
+              <div className="overflow-x-auto rounded-[26px] border border-slate-200">
+                <table className="w-full min-w-[980px] text-left">
+                  <thead className="bg-slate-50">
+                    <tr className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">
+                      <th className="px-5 py-4">Date</th>
+                      <th className="px-5 py-4">Description</th>
+                      <th className="px-5 py-4">Amount</th>
+                      <th className="px-5 py-4">Type</th>
+                      <th className="px-5 py-4">Expense Type</th>
+                      <th className="px-5 py-4">Source File</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {groupTransactionsLoading ? (
+                      <tr><td colSpan={6} className="px-5 py-8"><SkeletonLine className="h-5 w-full" /></td></tr>
+                    ) : groupTransactionRows.map((transaction) => (
+                      <tr key={transaction.transaction_id} className="border-t border-slate-100 text-sm text-slate-700">
+                        <td className="px-5 py-4 font-semibold">{formatDate(transaction.transaction_date)}</td>
+                        <td className="px-5 py-4">
+                          <p className="font-bold text-slate-900">{transaction.description || 'No description'}</p>
+                          <p className="mt-1 text-xs font-semibold text-slate-400">{transaction.chart_acc_head || transaction.cleaned_chart_acc_head || 'No account head'}</p>
+                        </td>
+                        <td className="px-5 py-4 font-bold">TK {Number(transaction.amount || 0).toLocaleString()}</td>
+                        <td className="px-5 py-4">
+                          <span className={`rounded-full px-3 py-1 text-xs font-black uppercase tracking-[0.12em] ${transaction.transaction_type === 'credit' ? 'bg-cyan-50 text-cyan-700' : 'bg-amber-50 text-amber-700'}`}>
+                            {transaction.transaction_type}
+                          </span>
+                        </td>
+                        <td className="px-5 py-4">{transaction.expense_category_name || selectedExpenseGroup.suggested_category_name || 'Unassigned'}</td>
+                        <td className="px-5 py-4 font-semibold text-slate-500">{transaction.source_file_name || 'N/A'}</td>
+                      </tr>
+                    ))}
+                    {!groupTransactionsLoading && !groupTransactionRows.length && (
+                      <tr>
+                        <td colSpan={6} className="px-5 py-10 text-center text-sm font-semibold text-slate-400">
+                          No transactions found for this group.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+                <div className="flex flex-col gap-3 border-t border-slate-100 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-sm font-semibold text-slate-500">
+                    Showing {groupTransactionStart}-{groupTransactionEnd} of {groupTransactionTotal}
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setGroupTransactionOffset((current) => Math.max(0, current - GROUP_TRANSACTION_PAGE_SIZE))}
+                      disabled={groupTransactionsLoading || groupTransactionOffset === 0}
+                      className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Previous
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGroupTransactionOffset((current) => current + GROUP_TRANSACTION_PAGE_SIZE)}
+                      disabled={groupTransactionsLoading || groupTransactionEnd >= groupTransactionTotal}
+                      className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {selectedAnomaly && (
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 px-4 py-8 backdrop-blur-sm"
@@ -1399,10 +2062,12 @@ const DepartmentPicker = ({
   departments,
   selectedId,
   onSelect,
+  isLoading = false,
 }: {
   departments: Department[];
   selectedId: string;
   onSelect: (departmentId: string) => void;
+  isLoading?: boolean;
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
@@ -1448,7 +2113,11 @@ const DepartmentPicker = ({
             {selectedDepartment?.department_name || 'Choose department'}
           </span>
         </span>
-        <ChevronDown size={18} className={`shrink-0 text-slate-400 transition-transform duration-200 ${isOpen ? 'rotate-180 text-blue-600' : ''}`} />
+        {isLoading ? (
+          <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-blue-100 border-t-blue-600" aria-label="Loading department data" />
+        ) : (
+          <ChevronDown size={18} className={`shrink-0 text-slate-400 transition-transform duration-200 ${isOpen ? 'rotate-180 text-blue-600' : ''}`} />
+        )}
       </button>
 
       {isOpen && (
@@ -1780,19 +2449,30 @@ const ExecutiveMetric = ({
   note,
   accent,
   icon: Icon,
+  isLoading = false,
 }: {
   label: string;
   value: string | number;
   note: string;
   accent: 'positive' | 'negative' | 'neutral';
   icon: React.ElementType;
+  isLoading?: boolean;
 }) => (
   <div className={`${shellCard} p-6 bg-[radial-gradient(circle_at_top_right,_rgba(59,130,246,0.08),_transparent_42%),white]`}>
     <div className="flex items-start justify-between gap-4">
-      <div>
+      <div className="min-w-0 flex-1">
         <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">{label}</p>
-        <p className="mt-3 text-4xl font-black tracking-[-0.05em] text-slate-950">{value}</p>
-        <p className="mt-2 text-sm font-medium text-slate-500">{note}</p>
+        {isLoading ? (
+          <>
+            <SkeletonLine className="mt-4 h-10 w-32" />
+            <SkeletonLine className="mt-3 h-4 w-44" />
+          </>
+        ) : (
+          <>
+            <p className="mt-3 text-4xl font-black tracking-[-0.05em] text-slate-950">{value}</p>
+            <p className="mt-2 text-sm font-medium text-slate-500">{note}</p>
+          </>
+        )}
       </div>
       <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-950 text-white">
         <Icon size={22} />
@@ -1818,19 +2498,31 @@ const CalloutCard = ({
   title,
   description,
   footer,
+  isLoading = false,
 }: {
   tone: 'dark' | 'green';
   eyebrow: string;
   title: string;
   description: string;
   footer: string;
+  isLoading?: boolean;
 }) => (
   <div className={`rounded-[34px] p-7 shadow-[0_24px_60px_rgba(15,23,42,0.18)] ${
     tone === 'dark' ? 'bg-slate-950 text-white' : 'bg-emerald-600 text-white'
   }`}>
     <p className={`text-[11px] font-black uppercase tracking-[0.26em] ${tone === 'dark' ? 'text-blue-200' : 'text-emerald-100'}`}>{eyebrow}</p>
-    <p className="mt-6 text-5xl font-black tracking-[-0.05em]">{title}</p>
-    <p className={`mt-5 text-base leading-7 ${tone === 'dark' ? 'text-slate-300' : 'text-emerald-50/85'}`}>{description}</p>
+    {isLoading ? (
+      <>
+        <SkeletonLine className={`mt-7 h-12 w-32 ${tone === 'dark' ? 'bg-white/15' : 'bg-white/25'}`} />
+        <SkeletonLine className={`mt-6 h-4 w-full ${tone === 'dark' ? 'bg-white/10' : 'bg-white/20'}`} />
+        <SkeletonLine className={`mt-3 h-4 w-4/5 ${tone === 'dark' ? 'bg-white/10' : 'bg-white/20'}`} />
+      </>
+    ) : (
+      <>
+        <p className="mt-6 text-5xl font-black tracking-[-0.05em]">{title}</p>
+        <p className={`mt-5 text-base leading-7 ${tone === 'dark' ? 'text-slate-300' : 'text-emerald-50/85'}`}>{description}</p>
+      </>
+    )}
     <p className={`mt-10 border-t pt-4 text-sm font-black uppercase tracking-[0.18em] ${
       tone === 'dark' ? 'border-white/10 text-slate-200' : 'border-emerald-400/50 text-emerald-50'
     }`}>
@@ -1839,18 +2531,159 @@ const CalloutCard = ({
   </div>
 );
 
-const PipelineButton = ({ label, icon: Icon, onClick }: { label: string; icon: React.ElementType; onClick: () => void }) => (
-  <button onClick={onClick} className="inline-flex items-center justify-center gap-2 rounded-[24px] border border-slate-200 bg-white px-4 py-4 font-bold text-slate-700 transition hover:-translate-y-0.5 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700">
+const WorkflowStep = ({
+  step,
+  title,
+  detail,
+  status,
+  icon: Icon,
+  disabled,
+  onClick,
+}: {
+  step: string;
+  title: string;
+  detail: string;
+  status: string;
+  icon: React.ElementType;
+  disabled: boolean;
+  onClick: () => void;
+}) => (
+  <div className={`rounded-[26px] border p-4 transition ${disabled ? 'border-slate-200 bg-slate-50/80' : 'border-blue-100 bg-white shadow-sm'}`}>
+    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-center gap-4">
+        <div className={`flex h-11 w-11 items-center justify-center rounded-2xl text-sm font-black ${disabled ? 'bg-slate-200 text-slate-500' : 'bg-blue-600 text-white'}`}>
+          {step}
+        </div>
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Icon size={17} className={disabled ? 'text-slate-400' : 'text-blue-600'} />
+            <p className="font-black text-slate-950">{title}</p>
+          </div>
+          <p className="mt-1 text-sm font-semibold text-slate-500">{detail}</p>
+        </div>
+      </div>
+      <div className="flex items-center gap-3">
+        <span className={`rounded-full px-3 py-1 text-[11px] font-black uppercase tracking-[0.12em] ${disabled ? 'bg-slate-200 text-slate-500' : 'bg-emerald-50 text-emerald-700'}`}>
+          {status}
+        </span>
+        <button
+          type="button"
+          onClick={onClick}
+          disabled={disabled}
+          className="rounded-2xl bg-slate-950 px-4 py-3 text-xs font-black text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+        >
+          Run
+        </button>
+      </div>
+    </div>
+  </div>
+);
+
+const PipelineButton = ({ label, icon: Icon, onClick, disabled = false }: { label: string; icon: React.ElementType; onClick: () => void; disabled?: boolean }) => (
+  <button
+    type="button"
+    disabled={disabled}
+    onClick={onClick}
+    className="inline-flex items-center justify-center gap-2 rounded-[24px] border border-slate-200 bg-white px-4 py-4 font-bold text-slate-700 transition hover:-translate-y-0.5 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:hover:translate-y-0"
+  >
     <Icon size={18} />
     {label}
   </button>
 );
 
-const DataPill = ({ label, value }: { label: string; value: string | number }) => (
+const DataPill = ({ label, value, isLoading = false }: { label: string; value: string | number; isLoading?: boolean }) => (
   <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
     <span className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">{label}</span>
-    <span className="text-sm font-black text-slate-950">{value}</span>
+    {isLoading ? <SkeletonLine className="h-4 w-16" /> : <span className="text-sm font-black text-slate-950">{value}</span>}
   </div>
+);
+
+const ReadinessCard = ({
+  label,
+  value,
+  state,
+  isLoading = false,
+}: {
+  label: string;
+  value: string;
+  state: 'ready' | 'warning' | 'missing';
+  isLoading?: boolean;
+}) => {
+  const styles = state === 'ready'
+    ? 'border-emerald-100 bg-emerald-50 text-emerald-700'
+    : state === 'warning'
+      ? 'border-amber-100 bg-amber-50 text-amber-700'
+      : 'border-slate-200 bg-slate-50 text-slate-500';
+
+  return (
+    <div className={`rounded-2xl border px-4 py-4 ${styles}`}>
+      <p className="text-[11px] font-black uppercase tracking-[0.16em] opacity-75">{label}</p>
+      {isLoading ? (
+        <SkeletonLine className="mt-3 h-5 w-28 bg-white/70" />
+      ) : (
+        <p className="mt-2 text-lg font-black">{value}</p>
+      )}
+    </div>
+  );
+};
+
+const SkeletonLine = ({ className = '' }: { className?: string }) => (
+  <span className={`block animate-pulse rounded-full bg-slate-200 ${className}`} />
+);
+
+const ChartLoadingState = ({ label }: { label: string }) => (
+  <div className="flex h-full w-full items-center justify-center rounded-[26px] border border-dashed border-blue-100 bg-blue-50/40">
+    <div className="text-center">
+      <span className="mx-auto flex h-11 w-11 animate-spin rounded-full border-4 border-blue-100 border-t-blue-600" />
+      <p className="mt-4 text-sm font-black uppercase tracking-[0.16em] text-blue-600">{label}</p>
+      <div className="mx-auto mt-5 grid w-56 grid-cols-5 items-end gap-2">
+        {[42, 68, 48, 76, 58].map((height, index) => (
+          <span
+            key={index}
+            className="block animate-pulse rounded-t-xl bg-blue-200/70"
+            style={{ height }}
+          />
+        ))}
+      </div>
+    </div>
+  </div>
+);
+
+const ForecastListSkeleton = () => (
+  <>
+    {[0, 1, 2].map((index) => (
+      <div key={index} className="rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <SkeletonLine className="h-5 w-28" />
+            <SkeletonLine className="mt-3 h-4 w-40" />
+          </div>
+          <div className="w-28">
+            <SkeletonLine className="ml-auto h-5 w-24" />
+            <SkeletonLine className="ml-auto mt-3 h-3 w-28" />
+          </div>
+        </div>
+      </div>
+    ))}
+  </>
+);
+
+const TransactionTableSkeleton = () => (
+  <>
+    {[0, 1, 2, 3, 4].map((index) => (
+      <tr key={index} className="border-t border-slate-100">
+        <td className="py-4"><SkeletonLine className="h-4 w-20" /></td>
+        <td className="py-4">
+          <SkeletonLine className="h-4 w-52" />
+          <SkeletonLine className="mt-2 h-3 w-32" />
+        </td>
+        <td className="py-4"><SkeletonLine className="h-4 w-24" /></td>
+        <td className="py-4"><SkeletonLine className="h-4 w-28" /></td>
+        <td className="py-4"><SkeletonLine className="h-7 w-24" /></td>
+        <td className="py-4"><SkeletonLine className="h-7 w-20" /></td>
+      </tr>
+    ))}
+  </>
 );
 
 const TransactionDetail = ({ label, value }: { label: string; value: string }) => (
@@ -1906,6 +2739,15 @@ const buildAnomalyExplanation = (anomaly: Anomaly) => {
 
 const formatDate = (value: string) =>
   new Date(value).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
+
+const formatDateTime = (value: string) =>
+  new Date(value).toLocaleString(undefined, {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 
 const formatMonthLabel = (value: string) =>
   new Date(`${value.length === 7 ? `${value}-01` : value}T00:00:00`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });

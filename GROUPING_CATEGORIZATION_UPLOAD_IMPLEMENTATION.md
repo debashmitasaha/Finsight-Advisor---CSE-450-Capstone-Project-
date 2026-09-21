@@ -10,8 +10,8 @@ The main operational flow is:
 2. The backend reads the CSV/XLS/XLSX file into a Pandas dataframe.
 3. Upload columns are normalized into the application's canonical transaction fields.
 4. Debit/credit columns are resolved into `amount` plus `transaction_type`.
-5. Each row is validated, converted into a `Transaction`, and linked to an `UploadBatch`.
-6. Duplicate rows are skipped using a deterministic `dedupe_hash`.
+5. Exact repeated files and high-overlap repeated uploads are rejected before insertion.
+6. Each accepted row is validated, converted into a `Transaction`, and linked to an `UploadBatch`.
 7. Grouping embeds transaction text and assigns transactions to semantic groups.
 8. Categorization can do two different things:
    - assign each transaction a simple `necessary`, `unnecessary`, or `uncategorized` label;
@@ -134,12 +134,12 @@ After `read_uploaded_file`, the upload endpoint also calls `normalize_upload_col
 
 - `Narration` -> `description`
 - `Chart of Account Head` -> `chart_acc_head`
-- `Group No` -> `group_no`
 - `Account Head Group` -> `account_head_group`
 - `Voucher_Type` -> `voucher_type`
 - `Reference Number` -> `po_number`
 
 This means the upload flow supports both normalized lowercase exports and title-case Excel-style ledger exports.
+Upload does not import ledger-provided group names or group numbers into the application's grouping fields. `group_no` and `group_name` stay empty until the explicit grouping action assigns values like `group_1`.
 
 ### Shared Upload Helpers
 
@@ -151,10 +151,9 @@ The upload endpoint uses:
 
 - `ensure_dataframe_columns`: verifies required columns are present.
 - `clean_chart_account_head`: lowercases account heads, removes bracketed text, numbers, and unsupported punctuation, then collapses whitespace.
-- `compute_dedupe_hash`: creates a SHA-256 hash from department id, transaction date, amount, description, invoice id, and PO number.
 - `normalize_bool`: converts values like `true`, `yes`, `1`, and `y` into booleans.
 
-The dedupe hash prevents repeated uploads of the same transaction row for the same department.
+Upload duplicate protection happens at the file/batch level. Accepted uploads preserve every valid ledger row; row-level duplicate-looking entries are left for forensic review.
 
 ### UploadBatch Creation
 
@@ -170,6 +169,7 @@ Before inserting transaction rows, the backend creates an `UploadBatch`:
 batch = UploadBatch(
     department_id=dept_id,
     source_file_name=file.filename or "upload.csv",
+    source_file_hash=source_file_hash,
     uploaded_by=current_user.user_id,
     row_count=len(dataframe.index),
     status="processing",
@@ -181,6 +181,7 @@ The `UploadBatch` table stores metadata about the uploaded file:
 - `upload_batch_id`
 - `department_id`
 - `source_file_name`
+- `source_file_hash`
 - `uploaded_by`
 - `uploaded_at`
 - `row_count`
@@ -194,23 +195,19 @@ Main file:
 
 - `backend/app/transaction/router.py`
 
-Before processing rows, the endpoint loads all existing hashes for the department:
+Before creating an upload batch, the endpoint computes a SHA-256 hash of the uploaded file bytes. If the same file hash already exists for the same department, the upload is rejected as an exact repeated file.
 
-```py
-existing_hashes = {
-    dedupe_hash
-    for (dedupe_hash,) in db.query(Transaction.dedupe_hash)
-    .filter(
-        Transaction.department_id == dept_id,
-        Transaction.dedupe_hash.isnot(None),
-    )
-    .all()
-}
+The endpoint also builds a temporary document-key set from voucher/reference data:
+
+```text
+voucher_number + "|" + ref_number, if both exist
+voucher_number, if only voucher_number exists
+ref_number, if only ref_number exists
 ```
 
-This avoids querying the database once per row, which is especially important when the database is remote, such as Supabase.
+It compares the uploaded file's unique document keys with existing transactions in the same department. If 80% or more of the uploaded document keys already exist, the upload is rejected as high-overlap with a previous upload.
 
-For each row, the backend computes a new hash with `compute_dedupe_hash`. If the hash already exists, the row is counted as a duplicate and skipped.
+If the upload passes these checks, every valid row is inserted. The upload flow does not skip repeated-looking rows within the same file because double-entry ledgers can legitimately contain repeated amounts, account heads, voucher numbers, or reference numbers.
 
 ### Row-by-Row Transaction Insert
 
@@ -227,9 +224,8 @@ For each dataframe row, the upload endpoint:
 3. normalizes `transaction_type`;
 4. extracts optional text fields;
 5. cleans `chart_acc_head`;
-6. computes `dedupe_hash`;
-7. creates a `Transaction` ORM object;
-8. adds it to the SQLAlchemy session.
+6. creates a `Transaction` ORM object;
+7. adds it to the SQLAlchemy session.
 
 The inserted `Transaction` stores fields including:
 
@@ -242,8 +238,6 @@ The inserted `Transaction` stores fields including:
 - `category`
 - `chart_acc_head`
 - `cleaned_chart_acc_head`
-- `group_no`
-- `group_name`
 - `payment_method`
 - `invoice_id`
 - `voucher_number`
@@ -254,7 +248,6 @@ The inserted `Transaction` stores fields including:
 - `approval_status`
 - `source_file_name`
 - `upload_batch_id`
-- `dedupe_hash`
 
 If a row fails parsing or conversion, the endpoint does not stop the whole upload. It increments `rows_failed` and records the row number and error message in `failed_rows`.
 
@@ -648,10 +641,12 @@ It:
 1. verifies department;
 2. loads scoped categories;
 3. ensures groups exist;
-4. skips groups already approved;
+4. skips groups already approved, pending review, or rejected;
 5. builds candidate group summaries;
-6. sends those summaries to Gemini;
+6. sends those summaries to Gemini in batches;
 7. stores Gemini's suggestion on the `Group` row.
+
+The request field `max_groups` is a per-call batch size, defaulting to 30 and capped at 60. The endpoint keeps processing batches until all eligible groups have been attempted, so a department with more than 30 groups can still receive suggestions for every eligible group in one action.
 
 Gemini configuration comes from backend environment variables:
 
@@ -799,9 +794,9 @@ Relevant indexes:
 - `idx_transaction_department_id`
 - `idx_transaction_expense_category`
 - `idx_transaction_batch_id`
-- `idx_transaction_dedupe_hash`
+- `idx_upload_batch_file_hash`
 
-These indexes support department filtering, category filtering, batch lookup, and duplicate detection.
+These indexes support department filtering, category filtering, batch lookup, and repeated-file detection.
 
 ### `backend/app/database.py`
 
@@ -941,9 +936,9 @@ Owns the upload endpoint and transaction read/update endpoints. It:
 - normalizes columns;
 - resolves debit/credit fields;
 - creates upload batch records;
-- skips duplicates;
+- rejects exact repeated files and high-overlap repeated uploads;
 - inserts transaction rows;
-- reports processed, failed, and duplicate row counts.
+- reports processed and failed row counts.
 
 ### `backend/app/services/dataframe.py`
 
@@ -959,7 +954,6 @@ Owns dataframe-level file parsing and ledger normalization. It:
 Provides shared helpers for these flows. It:
 
 - cleans chart account head text;
-- computes upload duplicate hashes;
 - checks required dataframe columns;
 - normalizes boolean upload fields;
 - defines valid simple transaction categories.

@@ -20,14 +20,12 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
   const [users, setUsers] = useState<UserAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [companyName, setCompanyName] = useState('');
-  const [departmentName, setDepartmentName] = useState('');
-  const [departmentBudget, setDepartmentBudget] = useState('');
   const [departmentCompanyId, setDepartmentCompanyId] = useState('');
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null);
   const [showAddCompanyModal, setShowAddCompanyModal] = useState(false);
-  const [showAddUserModal, setShowAddUserModal] = useState(false);
-  const [newUser, setNewUser] = useState(() => ({ username: '', email: '', password: generatePassword(), company_id: '', is_admin: false }));
+  const [showCompanyUserModal, setShowCompanyUserModal] = useState(false);
+  const [showGlobalUserModal, setShowGlobalUserModal] = useState(false);
+  const [showAddDepartmentModal, setShowAddDepartmentModal] = useState(false);
 
   const selectedCompany = useMemo(
     () => companies.find((company) => company.company_id === selectedCompanyId) || null,
@@ -39,12 +37,25 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
     [selectedCompany, users],
   );
 
+  const companyDepartments = useMemo(
+    () => (selectedCompany ? departments.filter((department) => department.company_id === selectedCompany.company_id) : []),
+    [departments, selectedCompany],
+  );
+
   const companyNameById = useMemo(() => new Map(companies.map((company) => [company.company_id, company.company_name])), [companies]);
 
   const companyOptions = useMemo(() => companies.map((company) => ({ value: company.company_id, label: company.company_name })), [companies]);
 
   const departmentActivityGroups = useMemo(() => {
     const groups = new Map<string, { companyId: string | null; companyName: string; departments: Department[] }>();
+
+    companies.forEach((company) => {
+      groups.set(company.company_id, {
+        companyId: company.company_id,
+        companyName: company.company_name,
+        departments: [],
+      });
+    });
 
     (overview?.department_summaries || []).forEach((department) => {
       const groupKey = department.company_id || 'unassigned';
@@ -67,7 +78,7 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
         departments: [...group.departments].sort((left, right) => left.department_name.localeCompare(right.department_name)),
       }))
       .sort((left, right) => left.companyName.localeCompare(right.companyName));
-  }, [companyNameById, overview?.department_summaries]);
+  }, [companies, companyNameById, overview?.department_summaries]);
 
   const loadData = async () => {
     setLoading(true);
@@ -109,43 +120,25 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
     setActivePath('/companies/details');
   };
 
-  const createCompany = async (event: React.FormEvent) => {
-    event.preventDefault();
-    await createCompanyByName(companyName);
-  };
-
   const createCompanyByName = async (name: string) => {
     try {
       const created = await api.createCompany(name.trim());
       setCompanies((current) => [...current, created]);
       setOverview((current) => current ? { ...current, companies: current.companies + 1 } : current);
-      setCompanyName('');
       setShowAddCompanyModal(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to create company');
     }
   };
 
-  const createDepartment = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const createDepartmentFromPayload = async (payload: { department_name: string; annual_budget: number; company_id?: string | null }) => {
     try {
-      await api.createDepartment({
-        department_name: departmentName,
-        annual_budget: departmentBudget === '' ? 0 : Number(departmentBudget),
-        company_id: departmentCompanyId || null,
-      });
-      setDepartmentName('');
-      setDepartmentBudget('');
+      await api.createDepartment(payload);
+      setShowAddDepartmentModal(false);
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to create department');
     }
-  };
-
-  const createUser = async (event: React.FormEvent) => {
-    event.preventDefault();
-    await createUserFromPayload(newUser);
-    setNewUser({ username: '', email: '', password: generatePassword(), company_id: '', is_admin: false });
   };
 
   const createUserFromPayload = async (payload: { username: string; email: string; password: string; company_id?: string | null; is_admin: boolean }) => {
@@ -160,7 +153,8 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
         ),
       );
       setOverview((current) => current ? { ...current, users: current.users + 1 } : current);
-      setShowAddUserModal(false);
+      setShowCompanyUserModal(false);
+      setShowGlobalUserModal(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to create user');
     }
@@ -211,14 +205,14 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
       <div className={cardStyle}>
         <h2 className="text-xl font-bold text-slate-900 mb-4">Department Activity</h2>
         <div className="overflow-x-auto">
-          <table className="w-full text-left">
+          <table className="w-full min-w-[860px] overflow-hidden rounded-2xl border-separate border-spacing-0 text-left">
             <thead>
-              <tr className="text-xs uppercase tracking-wider text-slate-500">
-                <th className="py-3">Department</th>
-                <th className="py-3">Budget</th>
-                <th className="py-3">Used This Year</th>
-                <th className="py-3">Utilization</th>
-                <th className="py-3">Transactions</th>
+              <tr className="text-xs uppercase tracking-wider text-white">
+                <th className="rounded-tl-2xl border-r border-white/40 bg-indigo-600/70 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] backdrop-blur">Department</th>
+                <th className=" border-r border-white/40 bg-indigo-600/70 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] backdrop-blur">Budget</th>
+                <th className="border-r border-white/40 bg-indigo-600/70 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] backdrop-blur">Used This Year</th>
+                <th className=" border-r border-white/40 bg-indigo-600/70 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] backdrop-blur">Utilization</th>
+                <th className="rounded-tr-2xl bg-indigo-600/70 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] backdrop-blur">Transactions</th>
               </tr>
             </thead>
             <tbody>
@@ -229,23 +223,25 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
               )}
               {departmentActivityGroups.map((group) => (
                 <React.Fragment key={group.companyId || 'unassigned'}>
-                  <tr className="border-t border-slate-200 bg-slate-50/80 text-xs uppercase tracking-wider text-slate-500">
-                    <td colSpan={5} className="px-3 py-3 font-black">
-                      <div className="flex items-center justify-between gap-4">
-                        <span>{group.companyName}</span>
-                        <span className="text-[11px] font-bold normal-case tracking-normal text-slate-400">
+                  <tr className="text-xs uppercase tracking-wider text-indigo-950">
+                    <td colSpan={5} className="border-y border-white/80 bg-gradient-to-r from-indigo-100/90 via-sky-100/80 to-cyan-100/90 px-4 py-3 font-black shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] backdrop-blur">
+                      <div className="relative flex min-h-8 items-center justify-center">
+                        <span className="text-center text-base font-black tracking-[0.16em] text-indigo-950">
+                          {group.companyName}
+                        </span>
+                        <span className="absolute right-0 rounded-full border border-white/70 bg-white/65 px-3 py-1 text-[11px] font-bold normal-case tracking-normal text-indigo-800 shadow-sm backdrop-blur">
                           {group.departments.length} {group.departments.length === 1 ? 'department' : 'departments'}
                         </span>
                       </div>
                     </td>
                   </tr>
                   {group.departments.map((department) => (
-                    <tr key={department.department_id} className="border-t border-slate-100 text-sm text-slate-700">
-                      <td className="py-3 font-semibold">{department.department_name}</td>
-                      <td className="py-3">TK {Number(department.annual_budget || 0).toLocaleString()}</td>
-                      <td className="py-3">TK {Number(department.used_budget_current_year || 0).toLocaleString()}</td>
-                      <td className="py-3">{Number(department.annual_budget_utilization_pct || 0).toFixed(1)}%</td>
-                      <td className="py-3">{department.transaction_count || 0}</td>
+                    <tr key={department.department_id} className="text-sm text-slate-700 transition hover:brightness-[0.98]">
+                      <td className="border-b border-white/90 bg-indigo-500/10 px-4 py-3 font-semibold text-indigo-950 backdrop-blur">{department.department_name}</td>
+                      <td className="border-b border-white/90 bg-emerald-500/10 px-4 py-3 font-bold text-emerald-800 backdrop-blur">TK {Number(department.annual_budget || 0).toLocaleString()}</td>
+                      <td className="border-b border-white/90 bg-amber-400/20 px-4 py-3 font-bold text-amber-800 backdrop-blur">TK {Number(department.used_budget_current_year || 0).toLocaleString()}</td>
+                      <td className="border-b border-white/90 bg-fuchsia-500/10 px-4 py-3 font-bold text-fuchsia-800 backdrop-blur">{Number(department.annual_budget_utilization_pct || 0).toFixed(1)}%</td>
+                      <td className="border-b border-white/90 bg-cyan-500/10 px-4 py-3 font-bold text-cyan-800 backdrop-blur">{department.transaction_count || 0}</td>
                     </tr>
                   ))}
                 </React.Fragment>
@@ -258,47 +254,29 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
   );
 
   const renderCompanies = () => (
-    <div className="grid grid-cols-1 xl:grid-cols-[1.2fr,0.8fr] gap-8">
-      <div className={cardStyle}>
-        <div className="flex items-center justify-between gap-4 mb-4">
-          <h2 className="text-xl font-bold text-slate-900">Companies</h2>
-          <button type="button" onClick={() => setShowAddCompanyModal(true)} className="inline-flex items-center gap-2 rounded-2xl bg-blue-600 px-4 py-2 text-sm font-bold text-white">
-            <Plus size={16} />
-            Add
-          </button>
-        </div>
-        <div className="space-y-3">
-          {companies.map((company) => (
-            <button
-              key={company.company_id}
-              type="button"
-              onClick={() => handleCompanyClick(company)}
-              className="w-full p-4 rounded-2xl bg-slate-50 border border-slate-200 flex items-center justify-between text-left transition hover:border-blue-200 hover:bg-blue-50/40"
-            >
-              <div>
-                <p className="font-bold text-slate-900">{company.company_name}</p>
-                <p className="text-sm text-slate-500">{company.department_count || 0} departments | {company.user_count || 0} users</p>
-              </div>
-              <span className="text-xs font-bold text-slate-400">{company.is_active === false ? 'Disabled' : 'Live'}</span>
-            </button>
-          ))}
-        </div>
+    <div className={cardStyle}>
+      <div className="flex items-center justify-between gap-4 mb-4">
+        <h2 className="text-xl font-bold text-slate-900">Companies</h2>
+        <button type="button" onClick={() => setShowAddCompanyModal(true)} className="inline-flex items-center gap-2 rounded-2xl bg-blue-600 px-4 py-2 text-sm font-bold text-white">
+          <Plus size={16} />
+          Add Company
+        </button>
       </div>
-      <div className="space-y-6">
-        <form className={cardStyle} onSubmit={createCompany}>
-          <h2 className="text-lg font-bold text-slate-900 mb-4">Create Company</h2>
-          <input value={companyName} onChange={(e) => setCompanyName(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3" placeholder="Company name" required />
-          <button className="mt-4 w-full rounded-2xl bg-blue-600 text-white py-3 font-bold">Create Company</button>
-        </form>
-        <form className={cardStyle} onSubmit={createDepartment}>
-          <h2 className="text-lg font-bold text-slate-900 mb-4">Create Department</h2>
-          <select value={departmentCompanyId} onChange={(e) => setDepartmentCompanyId(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 mb-3">
-            {companyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-          <input value={departmentName} onChange={(e) => setDepartmentName(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 mb-3" placeholder="Department name" required />
-          <input value={departmentBudget} onChange={(e) => setDepartmentBudget(e.target.value)} type="number" className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3" placeholder="Annual budget" required />
-          <button className="mt-4 w-full rounded-2xl bg-slate-900 text-white py-3 font-bold">Create Department</button>
-        </form>
+      <div className="space-y-3">
+        {companies.map((company) => (
+          <button
+            key={company.company_id}
+            type="button"
+            onClick={() => handleCompanyClick(company)}
+            className="w-full p-4 rounded-2xl bg-slate-50 border border-slate-200 flex items-center justify-between text-left transition hover:border-blue-200 hover:bg-blue-300/40"
+          >
+            <div>
+              <p className="font-bold text-slate-900">{company.company_name}</p>
+              <p className="text-sm text-slate-500">{company.department_count || 0} departments | {company.user_count || 0} users</p>
+            </div>
+            <span className="text-xs font-bold text-slate-400">{company.is_active === false ? 'Disabled' : 'Live'}</span>
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -310,12 +288,17 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
       <CompanyDetailView
         company={selectedCompany}
         accounts={companyAccounts}
+        departments={companyDepartments}
         currentUserId={user.user_id}
         onBack={() => {
           setSelectedCompanyId(null);
           setActivePath('/companies');
         }}
-        onAddUser={() => setShowAddUserModal(true)}
+        onAddUser={() => setShowCompanyUserModal(true)}
+        onAddDepartment={() => {
+          setDepartmentCompanyId(selectedCompany.company_id);
+          setShowAddDepartmentModal(true);
+        }}
         onToggleStatus={handleToggleStatus}
         onDeleteUser={handleDeleteUser}
       />
@@ -323,61 +306,38 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
   };
 
   const renderSettings = () => (
-    <div className="grid grid-cols-1 xl:grid-cols-[1fr,1fr] gap-8">
-      <div className={cardStyle}>
-        <h2 className="text-xl font-bold text-slate-900 mb-4">User Control</h2>
-        <div className="space-y-3 max-h-[480px] overflow-auto">
-          {users.map((account) => (
-            <div key={account.user_id} className="p-4 rounded-2xl bg-slate-50 border border-slate-200">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="font-bold text-slate-900">{account.name}</p>
-                  <p className="text-sm text-slate-500">{account.email}</p>
-                  <p className="text-xs font-semibold text-slate-500 mt-1">
-                    {account.company_id ? companyNameById.get(account.company_id) || 'Unknown Company' : 'No Company'}
-                  </p>
-                  <p className="text-xs text-slate-400 mt-1">{account.account_type} | {account.is_active ? 'Live' : 'Disabled'}</p>
-                </div>
-                <div className="flex gap-2">
-                  <button type="button" onClick={() => handleToggleStatus(account)} disabled={account.user_id === user.user_id} className="rounded-xl bg-white p-2 text-slate-500 shadow-sm disabled:opacity-40">
-                    {account.is_active ? <UserX size={16} /> : <UserCheck size={16} />}
-                  </button>
-                  <button type="button" onClick={() => handleDeleteUser(account)} disabled={account.user_id === user.user_id} className="rounded-xl bg-white p-2 text-red-500 shadow-sm disabled:opacity-40">
-                    <Trash2 size={16} />
-                  </button>
-                </div>
+    <div className={cardStyle}>
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h2 className="text-xl font-bold text-slate-900">User Control</h2>
+        <button type="button" onClick={() => setShowGlobalUserModal(true)} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-blue-600 px-5 py-3 font-bold text-white transition hover:bg-blue-700">
+          <Plus size={18} />
+          Create New User
+        </button>
+      </div>
+      <div className="space-y-3 max-h-[620px] overflow-auto">
+        {users.map((account) => (
+          <div key={account.user_id} className="p-4 rounded-2xl bg-slate-50 border border-slate-200">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-bold text-slate-900">{account.name}</p>
+                <p className="text-sm text-slate-500">{account.email}</p>
+                <p className="text-xs font-semibold text-slate-500 mt-1">
+                  {account.company_id ? companyNameById.get(account.company_id) || 'Unknown Company' : 'No Company'}
+                </p>
+                <p className="text-xs text-slate-400 mt-1">{account.account_type} | {account.is_active ? 'Live' : 'Disabled'}</p>
+              </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => handleToggleStatus(account)} disabled={account.user_id === user.user_id} className="rounded-xl bg-white p-2 text-slate-500 shadow-sm disabled:opacity-40">
+                  {account.is_active ? <UserX size={16} /> : <UserCheck size={16} />}
+                </button>
+                <button type="button" onClick={() => handleDeleteUser(account)} disabled={account.user_id === user.user_id} className="rounded-xl bg-white p-2 text-red-500 shadow-sm disabled:opacity-40">
+                  <Trash2 size={16} />
+                </button>
               </div>
             </div>
-          ))}
-        </div>
-      </div>
-      <form className={cardStyle} onSubmit={createUser}>
-        <h2 className="text-xl font-bold text-slate-900 mb-4">Create User</h2>
-        <div className="space-y-3">
-          <input value={newUser.username} onChange={(e) => setNewUser((prev) => ({ ...prev, username: e.target.value }))} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3" placeholder="Username" required />
-          <input value={newUser.email} onChange={(e) => setNewUser((prev) => ({ ...prev, email: e.target.value }))} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3" placeholder="Email" required />
-          <div className="flex gap-2">
-            <input value={newUser.password} onChange={(e) => setNewUser((prev) => ({ ...prev, password: e.target.value }))} className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3" placeholder="Password" required />
-            <button
-              type="button"
-              onClick={() => setNewUser((prev) => ({ ...prev, password: generatePassword() }))}
-              className="inline-flex items-center gap-2 rounded-2xl bg-slate-100 px-4 font-bold text-slate-700 transition hover:bg-slate-200"
-            >
-              <RefreshCw size={16} />
-              Generate
-            </button>
           </div>
-          <select value={newUser.company_id} onChange={(e) => setNewUser((prev) => ({ ...prev, company_id: e.target.value }))} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <option value="">No company / super admin</option>
-            {companyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-          <label className="flex items-center gap-2 text-sm font-medium text-slate-600">
-            <input type="checkbox" checked={newUser.is_admin} onChange={(e) => setNewUser((prev) => ({ ...prev, is_admin: e.target.checked }))} />
-            Grant admin access
-          </label>
-        </div>
-        <button className="mt-4 w-full rounded-2xl bg-blue-600 text-white py-3 font-bold">Create User</button>
-      </form>
+        ))}
+      </div>
     </div>
   );
 
@@ -395,11 +355,26 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
     <Layout user={user} onLogout={onLogout} activePath={activePath === '/companies/details' ? '/companies' : activePath} onNavigate={handleNavigate}>
       {!loading && error && <p className="mb-4 text-sm text-red-500">{error}</p>}
       {content}
-      {showAddUserModal && selectedCompany && (
+      {showCompanyUserModal && selectedCompany && (
         <CreateUserModal
           company={selectedCompany}
-          onClose={() => setShowAddUserModal(false)}
+          onClose={() => setShowCompanyUserModal(false)}
           onSubmit={(payload) => createUserFromPayload(payload)}
+        />
+      )}
+      {showGlobalUserModal && (
+        <CreateGlobalUserModal
+          companyOptions={companyOptions}
+          onClose={() => setShowGlobalUserModal(false)}
+          onSubmit={(payload) => createUserFromPayload(payload)}
+        />
+      )}
+      {showAddDepartmentModal && (
+        <CreateDepartmentModal
+          companyOptions={companyOptions}
+          initialCompanyId={departmentCompanyId}
+          onClose={() => setShowAddDepartmentModal(false)}
+          onSubmit={(payload) => createDepartmentFromPayload(payload)}
         />
       )}
       {showAddCompanyModal && (
@@ -425,17 +400,21 @@ const StatCard = ({ icon: Icon, label, value }: { icon: React.ElementType; label
 const CompanyDetailView = ({
   company,
   accounts,
+  departments,
   currentUserId,
   onBack,
   onAddUser,
+  onAddDepartment,
   onToggleStatus,
   onDeleteUser,
 }: {
   company: Company;
   accounts: UserAccount[];
+  departments: Department[];
   currentUserId: string;
   onBack: () => void;
   onAddUser: () => void;
+  onAddDepartment: () => void;
   onToggleStatus: (account: UserAccount) => void;
   onDeleteUser: (account: UserAccount) => void;
 }) => (
@@ -511,6 +490,48 @@ const CompanyDetailView = ({
         </table>
       </div>
     </div>
+
+    <div className="space-y-4">
+      <div className="flex justify-end">
+        <button onClick={onAddDepartment} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-slate-950 px-5 py-3 font-bold text-white transition hover:bg-slate-800">
+          <Plus size={18} />
+          Create New Department
+        </button>
+      </div>
+
+      <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+        <div className="border-b border-slate-100 bg-slate-50/70 p-5">
+          <h2 className="text-xl font-bold text-slate-900">Departments ({departments.length})</h2>
+        </div>
+        <div className="divide-y divide-slate-100">
+          {departments.map((department) => (
+            <div key={department.department_id} className="grid grid-cols-1 gap-3 p-5 md:grid-cols-[1fr,0.7fr,0.7fr,0.5fr] md:items-center">
+              <div>
+                <p className="font-bold text-slate-900">{department.department_name}</p>
+                <p className="mt-1 text-xs font-semibold text-slate-400">Department ID: {department.department_id}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Annual Budget</p>
+                <p className="mt-1 font-bold text-emerald-700">TK {Number(department.annual_budget || 0).toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Used This Year</p>
+                <p className="mt-1 font-bold text-amber-700">TK {Number(department.used_budget_current_year || 0).toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Transactions</p>
+                <p className="mt-1 font-bold text-cyan-700">{department.transaction_count || 0}</p>
+              </div>
+            </div>
+          ))}
+          {!departments.length && (
+            <div className="px-5 py-12 text-center text-sm font-medium text-slate-400">
+              No departments found for this company.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   </div>
 );
 
@@ -575,6 +596,136 @@ const CreateUserModal = ({
         <div className="mt-6 flex gap-3">
           <button type="button" onClick={onClose} disabled={submitting} className="flex-1 rounded-2xl bg-slate-100 py-3 font-bold text-slate-600">Cancel</button>
           <button type="submit" disabled={submitting} className="flex-1 rounded-2xl bg-blue-600 py-3 font-bold text-white disabled:opacity-60">{submitting ? 'Creating...' : 'Create Account'}</button>
+        </div>
+      </form>
+    </div>
+  );
+};
+
+const CreateGlobalUserModal = ({
+  companyOptions,
+  onClose,
+  onSubmit,
+}: {
+  companyOptions: Array<{ value: string; label: string }>;
+  onClose: () => void;
+  onSubmit: (payload: { username: string; email: string; password: string; company_id?: string | null; is_admin: boolean }) => Promise<void>;
+}) => {
+  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState(generatePassword());
+  const [companyId, setCompanyId] = useState('');
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSubmitting(true);
+    try {
+      await onSubmit({
+        username,
+        email,
+        password,
+        company_id: companyId || null,
+        is_admin: isAdmin,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+      <form onSubmit={handleSubmit} className="w-full max-w-lg rounded-3xl bg-white p-7 shadow-2xl">
+        <div className="mb-6 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-bold text-slate-900">Create User</h2>
+            <p className="mt-1 text-sm font-medium text-slate-500">Add a platform or company account.</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-100">
+            <X size={20} />
+          </button>
+        </div>
+        <div className="space-y-3">
+          <input value={username} onChange={(event) => setUsername(event.target.value)} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3" placeholder="Username" required />
+          <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3" placeholder="Email" required />
+          <div className="flex gap-2">
+            <input value={password} onChange={(event) => setPassword(event.target.value)} className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3" placeholder="Password" required />
+            <button type="button" onClick={() => setPassword(generatePassword())} className="inline-flex items-center gap-2 rounded-2xl bg-slate-100 px-4 font-bold text-slate-700 transition hover:bg-slate-200">
+              <RefreshCw size={16} />
+              Generate
+            </button>
+          </div>
+          <select value={companyId} onChange={(event) => setCompanyId(event.target.value)} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <option value="">No company / super admin</option>
+            {companyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+          <label className="flex items-center gap-2 text-sm font-medium text-slate-600">
+            <input type="checkbox" checked={isAdmin} onChange={(event) => setIsAdmin(event.target.checked)} />
+            Grant admin access
+          </label>
+        </div>
+        <div className="mt-6 flex gap-3">
+          <button type="button" onClick={onClose} disabled={submitting} className="flex-1 rounded-2xl bg-slate-100 py-3 font-bold text-slate-600">Cancel</button>
+          <button type="submit" disabled={submitting} className="flex-1 rounded-2xl bg-blue-600 py-3 font-bold text-white disabled:opacity-60">{submitting ? 'Creating...' : 'Create User'}</button>
+        </div>
+      </form>
+    </div>
+  );
+};
+
+const CreateDepartmentModal = ({
+  companyOptions,
+  initialCompanyId,
+  onClose,
+  onSubmit,
+}: {
+  companyOptions: Array<{ value: string; label: string }>;
+  initialCompanyId: string;
+  onClose: () => void;
+  onSubmit: (payload: { department_name: string; annual_budget: number; company_id?: string | null }) => Promise<void>;
+}) => {
+  const [companyId, setCompanyId] = useState(initialCompanyId);
+  const [departmentName, setDepartmentName] = useState('');
+  const [departmentBudget, setDepartmentBudget] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSubmitting(true);
+    try {
+      await onSubmit({
+        department_name: departmentName,
+        annual_budget: departmentBudget === '' ? 0 : Number(departmentBudget),
+        company_id: companyId || null,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+      <form onSubmit={handleSubmit} className="w-full max-w-lg rounded-3xl bg-white p-7 shadow-2xl">
+        <div className="mb-6 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-bold text-slate-900">Create Department</h2>
+            <p className="mt-1 text-sm font-medium text-slate-500">Add a department under a company.</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-100">
+            <X size={20} />
+          </button>
+        </div>
+        <div className="space-y-3">
+          <select value={companyId} onChange={(event) => setCompanyId(event.target.value)} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3" required>
+            {companyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+          <input value={departmentName} onChange={(event) => setDepartmentName(event.target.value)} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3" placeholder="Department name" required />
+          <input value={departmentBudget} onChange={(event) => setDepartmentBudget(event.target.value)} type="number" className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3" placeholder="Annual budget" required />
+        </div>
+        <div className="mt-6 flex gap-3">
+          <button type="button" onClick={onClose} disabled={submitting} className="flex-1 rounded-2xl bg-slate-100 py-3 font-bold text-slate-600">Cancel</button>
+          <button type="submit" disabled={submitting || !companyId || !departmentName.trim()} className="flex-1 rounded-2xl bg-slate-950 py-3 font-bold text-white disabled:opacity-60">{submitting ? 'Creating...' : 'Create Department'}</button>
         </div>
       </form>
     </div>

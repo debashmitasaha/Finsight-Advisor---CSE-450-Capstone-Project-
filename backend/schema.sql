@@ -77,6 +77,7 @@ create table if not exists public.upload_batch (
   upload_batch_id uuid primary key default gen_random_uuid(),
   department_id uuid references public.department(department_id) on delete set null,
   source_file_name text not null,
+  source_file_hash varchar(128),
   uploaded_by uuid references public.users(user_id) on delete set null,
   uploaded_at timestamptz not null default now(),
   row_count integer not null default 0,
@@ -295,6 +296,7 @@ create index if not exists idx_transaction_department_id on public.transaction(d
 create index if not exists idx_transaction_expense_category on public.transaction(expense_category_id);
 create index if not exists idx_transaction_batch_id on public.transaction(upload_batch_id);
 create index if not exists idx_transaction_dedupe_hash on public.transaction(dedupe_hash);
+create index if not exists idx_upload_batch_file_hash on public.upload_batch(department_id, source_file_hash);
 create index if not exists idx_case_transaction_transaction_id on public.case_transaction(transaction_id);
 create index if not exists idx_case_assignment_dept_id on public.case_assignment(dept_id);
 create index if not exists idx_budget_forecast_department_id on public.budget_forecast(department_id);

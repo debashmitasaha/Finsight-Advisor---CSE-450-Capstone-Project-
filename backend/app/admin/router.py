@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.auth.router import get_current_user, hash_password
 from app.database import get_db
 from app.models import Company, Department, Transaction, UploadBatch, User, UserRole
-from app.services.common import calculate_department_budget_usage, serialize_user
+from app.services.common import serialize_user
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 MAX_ANNUAL_BUDGET = 9_999_999_999_999.99
@@ -26,8 +27,23 @@ def count_transactions_for_department(db: Session, department_id: str) -> int:
 
 
 def get_department_budget_snapshot(db: Session, department: Department) -> dict[str, float]:
-    transactions = db.query(Transaction).filter(Transaction.department_id == department.department_id).all()
-    return calculate_department_budget_usage(transactions, float(department.annual_budget or 0))
+    budget = float(department.annual_budget or 0)
+    current_year = datetime.now(timezone.utc).year
+    used_budget = float(
+        db.query(func.coalesce(func.sum(Transaction.amount), 0))
+        .filter(
+            Transaction.department_id == department.department_id,
+            func.extract("year", Transaction.transaction_date) == current_year,
+            func.lower(func.coalesce(Transaction.transaction_type, "debit")) == "debit",
+        )
+        .scalar()
+        or 0
+    )
+    utilization = (used_budget / budget * 100) if budget > 0 else 0.0
+    return {
+        "used_budget_current_year": round(used_budget, 2),
+        "annual_budget_utilization_pct": round(utilization, 2),
+    }
 
 
 def serialize_department_summary(db: Session, department: Department) -> dict[str, object]:

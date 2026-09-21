@@ -183,6 +183,7 @@ Stores one uploaded ledger file and its processing status.
 | `upload_batch_id` | `uuid` | Primary key. Unique upload batch identifier. |
 | `department_id` | `uuid` | Department the upload belongs to. References `department.department_id`. |
 | `source_file_name` | `text` | Original uploaded file name. |
+| `source_file_hash` | `varchar(128)` | SHA-256 hash of the uploaded file bytes. Used to reject exact repeated uploads for a department. |
 | `uploaded_by` | `uuid` | User who uploaded the file. References `users.user_id`. |
 | `uploaded_at` | `timestamptz` | Timestamp when the file was uploaded. |
 | `row_count` | `integer` | Number of rows in the uploaded dataframe/file. |
@@ -226,7 +227,7 @@ Stores normalized transaction rows imported from CSV/XLS/XLSX files.
 | `flagged_reason` | `text` | Explanation for why the transaction is flagged. |
 | `source_file_name` | `text` | Original file name that produced this transaction. |
 | `upload_batch_id` | `uuid` | Upload batch that inserted this transaction. References `upload_batch.upload_batch_id`. |
-| `dedupe_hash` | `text` | Deterministic hash used to skip duplicate uploaded rows. |
+| `dedupe_hash` | `text` | Legacy nullable row hash column. Current upload duplicate checks happen at the upload batch level. |
 | `created_at` | `timestamptz` | Timestamp when the transaction row was created. |
 | `updated_at` | `timestamptz` | Timestamp updated by trigger when the transaction row changes. |
 
@@ -411,7 +412,8 @@ The schema creates indexes to speed up common filters and joins:
 | `idx_transaction_department_id` | `transaction(department_id)` | Faster transaction listing/filtering by department. |
 | `idx_transaction_expense_category` | `transaction(expense_category_id)` | Faster spend/category analysis. |
 | `idx_transaction_batch_id` | `transaction(upload_batch_id)` | Faster lookup of transactions from an upload batch. |
-| `idx_transaction_dedupe_hash` | `transaction(dedupe_hash)` | Faster duplicate detection during uploads. |
+| `idx_transaction_dedupe_hash` | `transaction(dedupe_hash)` | Legacy index for the nullable row hash column. |
+| `idx_upload_batch_file_hash` | `upload_batch(department_id, source_file_hash)` | Faster exact repeated-file detection by department. |
 | `idx_case_transaction_transaction_id` | `case_transaction(transaction_id)` | Faster case lookup by transaction. |
 | `idx_case_assignment_dept_id` | `case_assignment(dept_id)` | Faster case lookup by department. |
 | `idx_budget_forecast_department_id` | `budget_forecast(department_id)` | Faster forecast lookup by department. |
