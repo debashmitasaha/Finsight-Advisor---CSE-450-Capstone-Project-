@@ -59,11 +59,11 @@ STRATUM_ORDER: tuple[str, ...] = (STRATUM_PRIORITY, STRATUM_ALERT, STRATUM_NEAR,
 STRATUM_META: dict[str, dict[str, str]] = {
     STRATUM_PRIORITY: {
         "label": "Priority alert",
-        "why": "Scored at or above the priority line. Reviewed first, every one of them.",
+        "why": "Scored at or above the priority line. Every one of them goes into the queue, at the front.",
     },
     STRATUM_ALERT: {
         "label": "Alert",
-        "why": "Scored at or above this company's alert threshold. Every alert is reviewed.",
+        "why": "Scored at or above this company's alert threshold. Every alert goes into the queue; none is sampled out.",
     },
     STRATUM_NEAR: {
         "label": "Near-miss sample",

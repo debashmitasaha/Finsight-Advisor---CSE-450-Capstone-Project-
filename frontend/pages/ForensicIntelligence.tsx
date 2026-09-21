@@ -1493,7 +1493,7 @@ const ReviewQueuePanel = ({
                     <span className="text-sm font-bold text-slate-400"> of {summary.population}</span>
                   </p>
                   <p className="mt-1 text-[11px] leading-snug text-slate-500">
-                    {summary.rate === null ? 'every row is reviewed' : `${pct0(summary.rate)} random sample`}
+                    {summary.rate === null ? 'all queued, nothing sampled out' : `${pct0(summary.rate)} random sample`}
                   </p>
                   <p className="mt-2 text-[11px] leading-snug text-slate-500">{summary.why}</p>
                 </button>
