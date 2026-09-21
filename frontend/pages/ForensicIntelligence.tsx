@@ -21,6 +21,7 @@ import {
   RefreshCw,
   Scale,
   ShieldAlert,
+  SlidersHorizontal,
   Timer,
   Undo2,
   XCircle,
@@ -41,6 +42,9 @@ import {
   BenchmarkResponse,
   CalibrationMode,
   CalibrationRecord,
+  CalibrationSettingKey,
+  CalibrationSettings,
+  CalibrationSettingsPayload,
   CalibrationStatus,
   ConfusionMetrics,
   Department,
@@ -185,6 +189,7 @@ const ForensicIntelligence: React.FC<Props> = ({ department, transactions }) => 
   const [running, setRunning] = useState(false);
   const [benchmarking, setBenchmarking] = useState(false);
   const [calibrating, setCalibrating] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
   const [loadingQueue, setLoadingQueue] = useState(false);
   const [busyReview, setBusyReview] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -276,6 +281,40 @@ const ForensicIntelligence: React.FC<Props> = ({ department, transactions }) => 
       setCalibrating(false);
     }
   }, [deptId, loadQueue]);
+
+  const saveSettings = useCallback(
+    async (payload: CalibrationSettingsPayload) => {
+      if (!deptId) return;
+      setSavingSettings(true);
+      try {
+        const result = await api.engineUpdateCalibrationSettings(deptId, payload);
+        setCalibration(result.status);
+        if (result.calibration_triggered && result.calibration) {
+          setLatestRun(result.calibration);
+          setEvent({
+            tone: result.calibration.outcome === 'activated' ? 'good' : 'warn',
+            title:
+              result.calibration.outcome === 'activated'
+                ? 'Settings saved — the reviews on record already met the new minimums, so a calibration ran and a company-specific threshold is now active'
+                : 'Settings saved — a calibration ran on the reviews on record, but the candidate was rejected, so the current threshold stays',
+            body: result.calibration.reason,
+          });
+        } else {
+          setEvent({
+            tone: 'info',
+            title: 'Calibration settings saved for this company',
+            body: 'They are live now: no restart and no configuration file. The stepper, the progress bars and the recalibration counter already use them.',
+          });
+        }
+        await loadQueue();
+      } catch (err) {
+        setStatus(errorText(err, 'Could not save the settings'));
+      } finally {
+        setSavingSettings(false);
+      }
+    },
+    [deptId, loadQueue],
+  );
 
   // Reload whatever the last run stored for this department, so navigating away and back
   // does not present an analysed department as if it had never been examined.
@@ -414,6 +453,8 @@ const ForensicIntelligence: React.FC<Props> = ({ department, transactions }) => 
             event={event}
             onDismissEvent={() => setEvent(null)}
             onRun={runCalibration}
+            savingSettings={savingSettings}
+            onSaveSettings={saveSettings}
           />
         </>
       )}
@@ -652,6 +693,8 @@ const CalibrationPanel = ({
   event,
   onDismissEvent,
   onRun,
+  savingSettings,
+  onSaveSettings,
 }: {
   status: CalibrationStatus;
   latestRun: CalibrationRecord | null;
@@ -659,6 +702,8 @@ const CalibrationPanel = ({
   event: PanelEvent | null;
   onDismissEvent: () => void;
   onRun: () => void;
+  savingSettings: boolean;
+  onSaveSettings: (payload: CalibrationSettingsPayload) => void;
 }) => {
   const latest = latestRun ?? status.last_calibration;
   const companyName = status.company?.company_name ?? status.department.department_name;
@@ -689,8 +734,158 @@ const CalibrationPanel = ({
         <ProgressCard status={status} calibrating={calibrating} onRun={onRun} />
       </div>
 
+      {status.settings && <SettingsCard settings={status.settings} saving={savingSettings} onSave={onSaveSettings} />}
+
       {latest && <LatestCalibrationCard record={latest} status={status} />}
       {status.history.length > 1 && <HistoryList history={status.history} />}
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------- settings card
+
+const SETTING_ORDER: CalibrationSettingKey[] = [
+  'min_reviewed_rows',
+  'min_positive_labels',
+  'min_negative_labels',
+  'recalibration_batch',
+  'bootstrap_threshold',
+];
+
+const SETTING_META: Record<CalibrationSettingKey, { label: string; hint: string }> = {
+  min_reviewed_rows: { label: 'Minimum reviews', hint: 'reviewed rows before the first calibration can run' },
+  min_positive_labels: { label: 'Minimum confirmed', hint: 'confirmed verdicts before the first calibration' },
+  min_negative_labels: { label: 'Minimum cleared', hint: 'cleared verdicts before the first calibration' },
+  recalibration_batch: { label: 'Recalibrate every', hint: 'new reviews between automatic recalibrations' },
+  bootstrap_threshold: { label: 'Bootstrap threshold', hint: 'alert line until this company has calibrated' },
+};
+
+const toDraft = (values: Record<CalibrationSettingKey, number>) =>
+  Object.fromEntries(SETTING_ORDER.map((key) => [key, String(values[key])])) as Record<CalibrationSettingKey, string>;
+
+// The five knobs live in the database per company and are read on every request, so a
+// save here is in force immediately: no environment file, no server restart.
+const SettingsCard = ({
+  settings,
+  saving,
+  onSave,
+}: {
+  settings: CalibrationSettings;
+  saving: boolean;
+  onSave: (payload: CalibrationSettingsPayload) => void;
+}) => {
+  const valuesKey = SETTING_ORDER.map((key) => settings.values[key]).join('|');
+  const [draft, setDraft] = useState<Record<CalibrationSettingKey, string>>(() => toDraft(settings.values));
+
+  useEffect(() => {
+    // Reset the form whenever the server-side values change (a save, a preset, another admin).
+    setDraft(toDraft(settings.values));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [valuesKey]);
+
+  const problems = SETTING_ORDER.filter((key) => {
+    const value = Number(draft[key]);
+    const [low, high] = settings.bounds[key];
+    return draft[key].trim() === '' || !Number.isFinite(value) || value < low || value > high;
+  });
+  const dirty = SETTING_ORDER.some((key) => Number(draft[key]) !== settings.values[key]);
+  const demo = settings.presets.demo;
+  const demoLabel = demo
+    ? `Demo preset (${SETTING_ORDER.filter((key) => demo[key] !== undefined).map((key) => demo[key]).join(' · ')})`
+    : 'Demo preset';
+  const locked = !settings.editable || saving;
+
+  const save = () =>
+    onSave(Object.fromEntries(SETTING_ORDER.map((key) => [key, Number(draft[key])])) as CalibrationSettingsPayload);
+
+  return (
+    <div className="border-t border-slate-100 px-7 py-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-slate-100 text-slate-700">
+            <SlidersHorizontal className="h-4 w-4" />
+          </span>
+          <div>
+            <p className="text-sm font-black text-slate-900">Calibration settings · this company</p>
+            <p className="mt-0.5 max-w-3xl text-xs leading-relaxed text-slate-500">{settings.note}</p>
+          </div>
+        </div>
+        <span
+          className={`rounded-full border px-3 py-1 text-[11px] font-black uppercase tracking-wider ${
+            settings.overridden.length ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-slate-200 bg-slate-50 text-slate-600'
+          }`}
+        >
+          {settings.overridden.length ? `${settings.overridden.length} changed from defaults` : 'Deployment defaults'}
+        </span>
+      </div>
+
+      <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        {SETTING_ORDER.map((key) => {
+          const meta = SETTING_META[key];
+          const [low, high] = settings.bounds[key];
+          const invalid = problems.includes(key);
+          const changed = settings.overridden.includes(key);
+          return (
+            <label
+              key={key}
+              className={`block rounded-2xl border p-3 ${
+                invalid ? 'border-red-300 bg-red-50/40' : changed ? 'border-amber-200 bg-amber-50/40' : 'border-slate-200'
+              }`}
+            >
+              <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">{meta.label}</span>
+              <input
+                type="number"
+                value={draft[key]}
+                min={low}
+                max={high}
+                step={key === 'bootstrap_threshold' ? 5 : 1}
+                disabled={locked}
+                onChange={(e) => setDraft((current) => ({ ...current, [key]: e.target.value }))}
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-lg font-black tabular-nums text-slate-900 focus:border-slate-400 focus:outline-none disabled:bg-slate-50 disabled:text-slate-500"
+              />
+              <span className="mt-1 block text-[11px] leading-snug text-slate-500">{meta.hint}</span>
+              <span className="mt-1 block text-[10px] text-slate-400">
+                default {settings.defaults[key]} · allowed {low}–{high >= 10000 ? '∞' : high}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <button
+          onClick={save}
+          disabled={locked || !dirty || problems.length > 0}
+          className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-5 py-2.5 text-sm font-black text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+          Save settings
+        </button>
+        <button
+          onClick={() => onSave({ preset: 'demo' })}
+          disabled={locked}
+          className="rounded-2xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:border-slate-400 disabled:opacity-40"
+        >
+          {demoLabel}
+        </button>
+        <button
+          onClick={() => onSave({ preset: 'default' })}
+          disabled={locked || !settings.stored}
+          className="rounded-2xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:border-slate-400 disabled:opacity-40"
+        >
+          Reset to defaults
+        </button>
+        {!settings.editable && (
+          <p className="flex items-center gap-1.5 text-[11px] text-slate-400">
+            <Lock className="h-3.5 w-3.5" /> Only a company admin can change these.
+          </p>
+        )}
+        {problems.length > 0 && settings.editable && (
+          <p className="text-[11px] font-bold text-red-700">
+            Out of range: {problems.map((key) => SETTING_META[key].label).join(', ')}
+          </p>
+        )}
+      </div>
     </div>
   );
 };
@@ -1298,7 +1493,7 @@ const ReviewQueuePanel = ({
                     <span className="text-sm font-bold text-slate-400"> of {summary.population}</span>
                   </p>
                   <p className="mt-1 text-[11px] leading-snug text-slate-500">
-                    {summary.rate === null ? 'every row is reviewed' : `${pct0(summary.rate)} random sample`}
+                    {summary.rate === null ? 'all queued, nothing sampled out' : `${pct0(summary.rate)} random sample`}
                   </p>
                   <p className="mt-2 text-[11px] leading-snug text-slate-500">{summary.why}</p>
                 </button>

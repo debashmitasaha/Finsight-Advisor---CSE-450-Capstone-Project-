@@ -25,7 +25,7 @@ and nothing else.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
 from app.forensic_engine.config import CalibrationConfig
@@ -59,11 +59,11 @@ STRATUM_ORDER: tuple[str, ...] = (STRATUM_PRIORITY, STRATUM_ALERT, STRATUM_NEAR,
 STRATUM_META: dict[str, dict[str, str]] = {
     STRATUM_PRIORITY: {
         "label": "Priority alert",
-        "why": "Scored at or above the priority line. Reviewed first, every one of them.",
+        "why": "Scored at or above the priority line. Every one of them goes into the queue, at the front.",
     },
     STRATUM_ALERT: {
         "label": "Alert",
-        "why": "Scored at or above this company's alert threshold. Every alert is reviewed.",
+        "why": "Scored at or above this company's alert threshold. Every alert goes into the queue; none is sampled out.",
     },
     STRATUM_NEAR: {
         "label": "Near-miss sample",
@@ -272,6 +272,102 @@ def recalibration_due(reviews_since_last: int, ever_calibrated: bool, ready: boo
     if not ever_calibrated:
         return True
     return reviews_since_last >= config.recalibration_batch
+
+
+# -------------------------------------------------------------- runtime settings (P16)
+
+
+OVERRIDABLE_FIELDS: tuple[str, ...] = (
+    "bootstrap_threshold",
+    "min_reviewed_rows",
+    "min_positive_labels",
+    "min_negative_labels",
+    "recalibration_batch",
+)
+"""The knobs a company admin may change from the interface, per company, without a
+restart or a configuration file.
+
+Everything else in `CalibrationConfig` — the time split, the candidate grid, the three
+validation checks, the sampling rates — is the method itself, not a setting, and stays
+fixed so that every company's threshold is chosen the same defensible way."""
+
+PRESETS: dict[str, dict[str, float]] = {
+    "demo": {
+        "min_reviewed_rows": 30,
+        "min_positive_labels": 10,
+        "min_negative_labels": 17,
+        "recalibration_batch": 10,
+    },
+}
+"""Named bundles the UI can apply in one click.
+
+'demo' is close to the smallest setting at which a calibration can still *activate*: the
+held-out check needs 3 confirmed and 5 cleared rows, and with the 70/30 time split that
+takes at least 9 confirmed and 15 cleared labels in total (see `activation_floors`)."""
+
+
+def _held_out(count: int, share: float) -> int:
+    """How many of `count` rows of one label `_cut` would hold out for validation."""
+    if count < 2:
+        return 0
+    cut = int(round(count * share))
+    return count - min(max(cut, 1), count - 1)
+
+
+def activation_floors(config: CalibrationConfig) -> dict[str, int]:
+    """The smallest minimums at which a candidate can ever pass validation.
+
+    Below these a company could reach 'ready', run a calibration, and be rejected every
+    time for lack of held-out labels — honest, but useless. The settings endpoint refuses
+    values under the floor instead of letting a demo walk into that wall.
+    """
+    positive = next(n for n in range(2, 10_000) if _held_out(n, config.calibration_share) >= config.min_validation_positive)
+    negative = next(n for n in range(2, 10_000) if _held_out(n, config.calibration_share) >= config.min_validation_negative)
+    return {
+        "min_positive_labels": positive,
+        "min_negative_labels": negative,
+        "min_reviewed_rows": positive + negative,
+        "recalibration_batch": 1,
+        "bootstrap_threshold": int(min(config.candidate_thresholds)),
+    }
+
+
+def setting_bounds(config: CalibrationConfig) -> dict[str, tuple[float, float]]:
+    """Inclusive (low, high) per overridable field, derived from the method's own limits."""
+    floors = activation_floors(config)
+    return {
+        "bootstrap_threshold": (float(min(config.candidate_thresholds)), float(max(config.candidate_thresholds))),
+        "min_reviewed_rows": (float(floors["min_reviewed_rows"]), 10_000.0),
+        "min_positive_labels": (float(floors["min_positive_labels"]), 10_000.0),
+        "min_negative_labels": (float(floors["min_negative_labels"]), 10_000.0),
+        "recalibration_batch": (1.0, 10_000.0),
+    }
+
+
+def with_overrides(base: CalibrationConfig, overrides: dict | None) -> CalibrationConfig:
+    """A copy of `base` with one company's stored overrides applied, after validation.
+
+    Raises ValueError naming the offending field, so the API turns it into a 400 and
+    nothing half-applied is ever stored. `base` is never mutated.
+    """
+    if not overrides:
+        return base
+    bounds = setting_bounds(base)
+    values: dict[str, float | int] = {}
+    for key, raw in overrides.items():
+        if key not in OVERRIDABLE_FIELDS:
+            raise ValueError(f"'{key}' is not a setting that can be changed at runtime")
+        if raw is None:
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"'{key}' must be a number") from None
+        low, high = bounds[key]
+        if not low <= value <= high:
+            raise ValueError(f"'{key}' must be between {low:g} and {high:g}")
+        values[key] = value if key == "bootstrap_threshold" else int(value)
+    return replace(base, **values) if values else base
 
 
 # ------------------------------------------------------------------------- calibration

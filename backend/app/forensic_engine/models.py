@@ -144,6 +144,12 @@ class CompanyForensicConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
     engine_version: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    calibration_overrides: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    """Settings an admin changed for this company from the interface — the minimums, the
+    recalibration batch, the bootstrap line — stored as {field: value}. Null means the
+    deployment defaults apply. Read on every request, so a change takes effect at once,
+    with no restart and no configuration file to edit on the server."""
+
     company: Mapped[Company] = relationship("Company", foreign_keys=[company_id])
 
 

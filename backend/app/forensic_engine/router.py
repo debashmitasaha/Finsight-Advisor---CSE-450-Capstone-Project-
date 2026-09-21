@@ -26,7 +26,11 @@ from app.models import Company, Department, Transaction, User
 
 router = APIRouter(prefix="/forensic-engine", tags=["Forensic Intelligence Engine"])
 
-CALIBRATION = CalibrationConfig()
+DEFAULT_CALIBRATION = CalibrationConfig()
+"""Deployment-wide defaults, from the environment. Every company starts from these; an
+admin can change the overridable ones per company from the interface, and the change is
+read on the next request (see `_calibration_for`). Nothing is cached in the process, so a
+running server never needs a restart for a settings change."""
 
 
 # ------------------------------------------------------------------------- requests
@@ -67,6 +71,22 @@ class ReviewRequest(BaseModel):
 
 class CalibrateRequest(BaseModel):
     dept_id: str
+
+
+class CalibrationSettingsRequest(BaseModel):
+    """Change a company's calibration settings from the interface.
+
+    `preset` is applied first ('default' clears every override, 'demo' applies the demo
+    bundle), then any field given explicitly on top. Fields left null are untouched.
+    """
+
+    dept_id: str
+    preset: Literal["demo", "default"] | None = None
+    bootstrap_threshold: float | None = None
+    min_reviewed_rows: int | None = None
+    min_positive_labels: int | None = None
+    min_negative_labels: int | None = None
+    recalibration_batch: int | None = None
 
 
 # -------------------------------------------------------------------------- helpers
@@ -118,11 +138,27 @@ def _config_row(db: Session, company_id: str, create: bool) -> CompanyForensicCo
     return row
 
 
+def _calibration_for(config_row: CompanyForensicConfig | None) -> CalibrationConfig:
+    """This company's calibration settings: the deployment defaults with whatever an admin
+    changed on the Intelligence Engine page applied on top.
+
+    Resolved per request from the stored row, which is what makes a settings change take
+    effect immediately. A stored override that no longer validates (bounds tightened in a
+    newer version) falls back to the defaults rather than taking the page down; the
+    settings panel then shows the defaults and the admin can save again.
+    """
+    overrides = config_row.calibration_overrides if config_row else None
+    try:
+        return cal.with_overrides(DEFAULT_CALIBRATION, overrides)
+    except ValueError:
+        return DEFAULT_CALIBRATION
+
+
 def _threshold_for(config_row: CompanyForensicConfig | None) -> tuple[float, str, str]:
     """(value, source, mode) that applies to a company right now."""
     mode = config_row.calibration_mode if config_row else cal.MODE_BOOTSTRAP
     stored = float(config_row.active_threshold) if config_row and config_row.active_threshold is not None else None
-    value, source = cal.active_threshold(mode, stored, CALIBRATION)
+    value, source = cal.active_threshold(mode, stored, _calibration_for(config_row))
     return value, source, mode
 
 
@@ -251,29 +287,50 @@ def _serialize_history(entry: ThresholdCalibrationHistory) -> dict:
     }
 
 
-def _requirements() -> dict:
+def _requirements(config: CalibrationConfig) -> dict:
     return {
-        "bootstrap_threshold": CALIBRATION.bootstrap_threshold,
-        "min_reviewed_rows": CALIBRATION.min_reviewed_rows,
-        "min_positive_labels": CALIBRATION.min_positive_labels,
-        "min_negative_labels": CALIBRATION.min_negative_labels,
-        "calibration_share": CALIBRATION.calibration_share,
-        "candidate_thresholds": list(CALIBRATION.candidate_thresholds),
-        "min_validation_positive": CALIBRATION.min_validation_positive,
-        "min_validation_negative": CALIBRATION.min_validation_negative,
-        "max_validation_drop": CALIBRATION.max_validation_drop,
-        "recalibration_batch": CALIBRATION.recalibration_batch,
+        "bootstrap_threshold": config.bootstrap_threshold,
+        "min_reviewed_rows": config.min_reviewed_rows,
+        "min_positive_labels": config.min_positive_labels,
+        "min_negative_labels": config.min_negative_labels,
+        "calibration_share": config.calibration_share,
+        "candidate_thresholds": list(config.candidate_thresholds),
+        "min_validation_positive": config.min_validation_positive,
+        "min_validation_negative": config.min_validation_negative,
+        "max_validation_drop": config.max_validation_drop,
+        "recalibration_batch": config.recalibration_batch,
     }
 
 
-def _sampling() -> dict:
+def _sampling(config: CalibrationConfig) -> dict:
     return {
-        "near_miss_share": CALIBRATION.near_miss_share,
-        "sample_rate_near": CALIBRATION.sample_rate_near,
-        "sample_rate_low": CALIBRATION.sample_rate_low,
-        "sample_min_near": CALIBRATION.sample_min_near,
-        "sample_min_low": CALIBRATION.sample_min_low,
-        "priority_score": CALIBRATION.priority_score,
+        "near_miss_share": config.near_miss_share,
+        "sample_rate_near": config.sample_rate_near,
+        "sample_rate_low": config.sample_rate_low,
+        "sample_min_near": config.sample_min_near,
+        "sample_min_low": config.sample_min_low,
+        "priority_score": config.priority_score,
+    }
+
+
+def _settings_payload(config_row: CompanyForensicConfig | None, config: CalibrationConfig, editable: bool) -> dict:
+    """What the settings panel shows: the values in force, the defaults they came from,
+    the bounds the method allows, and whether the caller may change them."""
+    values = {key: getattr(config, key) for key in cal.OVERRIDABLE_FIELDS}
+    defaults = {key: getattr(DEFAULT_CALIBRATION, key) for key in cal.OVERRIDABLE_FIELDS}
+    return {
+        "values": values,
+        "defaults": defaults,
+        "bounds": {key: list(pair) for key, pair in cal.setting_bounds(DEFAULT_CALIBRATION).items()},
+        "overridden": [key for key in cal.OVERRIDABLE_FIELDS if values[key] != defaults[key]],
+        "presets": cal.PRESETS,
+        "editable": editable,
+        "stored": bool(config_row and config_row.calibration_overrides),
+        "note": (
+            "Changes apply to this company immediately and need no restart. Lower minimums let a "
+            "calibration run sooner but rest on fewer labels; the floors below are the smallest values "
+            "at which a candidate can still pass held-out validation."
+        ),
     }
 
 
@@ -286,6 +343,7 @@ def _narrative(
     config_row: CompanyForensicConfig | None,
     last: ThresholdCalibrationHistory | None,
     since: int,
+    config: CalibrationConfig,
 ) -> tuple[str, str, list[str]]:
     """Plain-language account of where the company stands: what is happening, and — just
     as important for anyone reading the screen — what is *not*."""
@@ -313,8 +371,8 @@ def _narrative(
             f"{counts['reviewed']} of {company_name}'s transactions have been reviewed "
             f"({counts['confirmed']} confirmed, {counts['cleared']} cleared, {counts['uncertain']} uncertain). "
             f"The bootstrap threshold of {value:.0f} stays in force until at least "
-            f"{CALIBRATION.min_reviewed_rows} reviews with {CALIBRATION.min_positive_labels} confirmed and "
-            f"{CALIBRATION.min_negative_labels} cleared exist."
+            f"{config.min_reviewed_rows} reviews with {config.min_positive_labels} confirmed and "
+            f"{config.min_negative_labels} cleared exist."
         )
         not_happening = [
             "The threshold is still the bootstrap value. It has not been tuned to this company.",
@@ -349,7 +407,7 @@ def _narrative(
         f"Threshold {value:.0f} was selected from {company_name}'s own reviewed ground truth on {calibrated_on}"
         f"{at_the_time}. It gave the best F1 on the older labels and held up on the newer ones: held-out precision "
         f"{precision:.0%}, recall {recall:.0%}, F1 {f1:.2f}. It recalibrates automatically after every "
-        f"{CALIBRATION.recalibration_batch} new reviews ({since} so far)."
+        f"{config.recalibration_batch} new reviews ({since} so far)."
     )
     if last and last.outcome == "rejected":
         explanation += (
@@ -360,17 +418,17 @@ def _narrative(
         "Company-specific threshold active",
         explanation,
         [
-            f"The bootstrap threshold of {CALIBRATION.bootstrap_threshold:.0f} is no longer used for this company.",
+            f"The bootstrap threshold of {config.bootstrap_threshold:.0f} is no longer used for this company.",
             "The threshold is not re-chosen on every review. It only changes after a recalibration passes validation.",
             benchmark_note,
         ],
     )
 
 
-def _calibration_status(db: Session, department: Department, company: Company | None) -> dict:
+def _calibration_status(db: Session, department: Department, company: Company | None, editable: bool = False) -> dict:
     """Everything the UI needs to explain the company's alert line in one payload."""
     if company is None:
-        value, source = CALIBRATION.bootstrap_threshold, cal.SOURCE_BOOTSTRAP
+        value, source = DEFAULT_CALIBRATION.bootstrap_threshold, cal.SOURCE_BOOTSTRAP
         empty = _count_labels([])
         return {
             "company": None,
@@ -378,12 +436,13 @@ def _calibration_status(db: Session, department: Department, company: Company | 
             "engine_version": ENGINE_VERSION,
             "mode": cal.MODE_BOOTSTRAP,
             "threshold": _threshold_payload(value, source, cal.MODE_BOOTSTRAP),
-            "bootstrap_threshold": CALIBRATION.bootstrap_threshold,
+            "bootstrap_threshold": DEFAULT_CALIBRATION.bootstrap_threshold,
             "counts": empty,
-            "readiness": cal.readiness(0, 0, 0, CALIBRATION),
-            "requirements": _requirements(),
-            "sampling": _sampling(),
-            "recalibration": {"reviews_since_last": 0, "batch": CALIBRATION.recalibration_batch, "due": False, "ever_calibrated": False},
+            "readiness": cal.readiness(0, 0, 0, DEFAULT_CALIBRATION),
+            "requirements": _requirements(DEFAULT_CALIBRATION),
+            "sampling": _sampling(DEFAULT_CALIBRATION),
+            "settings": _settings_payload(None, DEFAULT_CALIBRATION, False),
+            "recalibration": {"reviews_since_last": 0, "batch": DEFAULT_CALIBRATION.recalibration_batch, "due": False, "ever_calibrated": False},
             "active_metrics": None,
             "calibrated_at": None,
             "candidate": None,
@@ -396,9 +455,10 @@ def _calibration_status(db: Session, department: Department, company: Company | 
         }
 
     config_row = _config_row(db, company.company_id, create=False)
+    config = _calibration_for(config_row)
     rows = _labelled_rows(db, company.company_id)
     counts = _count_labels(rows)
-    ready = cal.readiness(counts["reviewed"], counts["confirmed"], counts["cleared"], CALIBRATION)
+    ready = cal.readiness(counts["reviewed"], counts["confirmed"], counts["cleared"], config)
     value, source, mode = _threshold_for(config_row)
     if config_row is None:
         mode = cal.maturity_mode(counts["reviewed"], False)
@@ -413,8 +473,10 @@ def _calibration_status(db: Session, department: Department, company: Company | 
     last = history[0] if history else None
     since = counts["reviewed"] - (config_row.reviews_at_last_calibration if config_row else 0)
     ever = bool(config_row and config_row.candidate_status)
-    due = cal.recalibration_due(since, ever, ready["ready"], CALIBRATION)
-    status_text, explanation, not_happening = _narrative(company.company_name, mode, value, counts, ready, config_row, last, since)
+    due = cal.recalibration_due(since, ever, ready["ready"], config)
+    status_text, explanation, not_happening = _narrative(
+        company.company_name, mode, value, counts, ready, config_row, last, since, config
+    )
 
     active_metrics = None
     if config_row and config_row.threshold_source == cal.SOURCE_COMPANY_F1 and config_row.f1 is not None:
@@ -435,14 +497,15 @@ def _calibration_status(db: Session, department: Department, company: Company | 
         "engine_version": ENGINE_VERSION,
         "mode": mode,
         "threshold": _threshold_payload(value, source, mode),
-        "bootstrap_threshold": CALIBRATION.bootstrap_threshold,
+        "bootstrap_threshold": config.bootstrap_threshold,
         "counts": counts,
         "readiness": ready,
-        "requirements": _requirements(),
-        "sampling": _sampling(),
+        "requirements": _requirements(config),
+        "sampling": _sampling(config),
+        "settings": _settings_payload(config_row, config, editable),
         "recalibration": {
             "reviews_since_last": max(since, 0),
-            "batch": CALIBRATION.recalibration_batch,
+            "batch": config.recalibration_batch,
             "due": due,
             "ever_calibrated": ever,
         },
@@ -473,7 +536,7 @@ def _run_calibration(
     _refresh_counts(config_row, rows)
     current, _, _ = _threshold_for(config_row)
 
-    outcome = cal.calibrate(rows, current_threshold=current, config=CALIBRATION)
+    outcome = cal.calibrate(rows, current_threshold=current, config=_calibration_for(config_row))
     if not outcome.ready:
         return outcome, None
 
@@ -552,7 +615,7 @@ def capabilities(dept_id: str | None = None, current_user: User = Depends(get_cu
             "pipeline) as a fallback cohort for heads with too little history; vendor, employee and approver "
             "the day the ledger carries those columns"
         ),
-        "calibration": _requirements(),
+        "calibration": _requirements(DEFAULT_CALIBRATION),
     }
 
     if dept_id:
@@ -791,7 +854,72 @@ def calibration_status(dept_id: str, current_user: User = Depends(get_current_us
     """Where this department's company stands: mode, active threshold and why, progress
     towards calibration, and every calibration that has been attempted."""
     department = _department_or_404(db, dept_id)
-    return _calibration_status(db, department, department.company)
+    return _calibration_status(db, department, department.company, editable=bool(current_user.is_admin))
+
+
+@router.put("/calibration-settings")
+def update_calibration_settings(
+    payload: CalibrationSettingsRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Change this company's calibration settings from the interface, while the app runs.
+
+    The settings are stored on the company's configuration row and read on every request,
+    so the change is live at once: no environment file, no restart. Only the five knobs in
+    `calibration.OVERRIDABLE_FIELDS` can change, only within the bounds the method allows,
+    and only by an admin. If the new minimums are already met by the reviews on record,
+    the calibration that would normally run inside the next review runs right here, so the
+    screen reflects the new setting immediately.
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Only an admin can change calibration settings")
+
+    department = _department_or_404(db, payload.dept_id)
+    company = _company_or_400(department)
+    config_row = _config_row(db, company.company_id, create=True)
+
+    overrides: dict = {} if payload.preset == "default" else dict(config_row.calibration_overrides or {})
+    if payload.preset == "demo":
+        overrides.update(cal.PRESETS["demo"])
+    for key in cal.OVERRIDABLE_FIELDS:
+        value = getattr(payload, key)
+        if value is not None:
+            overrides[key] = value
+
+    try:
+        config = cal.with_overrides(DEFAULT_CALIBRATION, overrides)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Store only what differs from the defaults, so "overridden" on the screen stays true.
+    stored = {
+        key: getattr(config, key)
+        for key in cal.OVERRIDABLE_FIELDS
+        if getattr(config, key) != getattr(DEFAULT_CALIBRATION, key)
+    }
+    config_row.calibration_overrides = stored or None
+    db.flush()
+
+    rows = _labelled_rows(db, company.company_id)
+    _refresh_counts(config_row, rows)
+    counts = _count_labels(rows)
+    ready = cal.readiness(counts["reviewed"], counts["confirmed"], counts["cleared"], config)
+    since = counts["reviewed"] - config_row.reviews_at_last_calibration
+    due = cal.recalibration_due(since, bool(config_row.candidate_status), ready["ready"], config)
+
+    entry = None
+    if due and rows:
+        _, entry = _run_calibration(db, company, config_row, triggered_by="auto")
+    db.commit()
+
+    return {
+        "success": True,
+        "settings": stored,
+        "calibration_triggered": entry is not None,
+        "calibration": _serialize_history(entry) if entry else None,
+        "status": _calibration_status(db, department, company, editable=True),
+    }
 
 
 @router.post("/calibrate")
@@ -814,7 +942,7 @@ def calibrate(payload: CalibrateRequest, current_user: User = Depends(get_curren
         "reason": outcome.reason,
         "outcome": outcome.to_dict(),
         "record": _serialize_history(entry) if entry else None,
-        "status": _calibration_status(db, department, company),
+        "status": _calibration_status(db, department, company, editable=bool(current_user.is_admin)),
     }
 
 
@@ -861,7 +989,7 @@ def review_queue(dept_id: str, current_user: User = Depends(get_current_user), d
         (txn.transaction_id, float(findings[txn.transaction_id].risk_score) if txn.transaction_id in findings else 0.0)
         for txn in spending
     ]
-    selected, strata = cal.sample_for_review(candidates, threshold, CALIBRATION, seed=run.run_id)
+    selected, strata = cal.sample_for_review(candidates, threshold, _calibration_for(config_row), seed=run.run_id)
 
     reviews = {
         review.transaction_id: review
@@ -955,12 +1083,13 @@ def submit_review(payload: ReviewRequest, current_user: User = Depends(get_curre
     review.reviewed_at = cal.utcnow()
     db.flush()
 
+    config = _calibration_for(config_row)
     rows = _labelled_rows(db, company.company_id)
     _refresh_counts(config_row, rows)
     counts = _count_labels(rows)
-    ready = cal.readiness(counts["reviewed"], counts["confirmed"], counts["cleared"], CALIBRATION)
+    ready = cal.readiness(counts["reviewed"], counts["confirmed"], counts["cleared"], config)
     since = counts["reviewed"] - config_row.reviews_at_last_calibration
-    due = cal.recalibration_due(since, bool(config_row.candidate_status), ready["ready"], CALIBRATION)
+    due = cal.recalibration_due(since, bool(config_row.candidate_status), ready["ready"], config)
 
     entry = None
     if due:
@@ -972,7 +1101,7 @@ def submit_review(payload: ReviewRequest, current_user: User = Depends(get_curre
         "review": _serialize_review(review),
         "calibration_triggered": entry is not None,
         "calibration": _serialize_history(entry) if entry else None,
-        "status": _calibration_status(db, department, company),
+        "status": _calibration_status(db, department, company, editable=bool(current_user.is_admin)),
     }
 
 
@@ -993,5 +1122,9 @@ def delete_review(review_id: str, current_user: User = Depends(get_current_user)
         _refresh_counts(config_row, _labelled_rows(db, review.company_id))
     db.commit()
 
-    status = _calibration_status(db, department, company) if department is not None else None
+    status = (
+        _calibration_status(db, department, company, editable=bool(current_user.is_admin))
+        if department is not None
+        else None
+    )
     return {"success": True, "review_id": review_id, "status": status}

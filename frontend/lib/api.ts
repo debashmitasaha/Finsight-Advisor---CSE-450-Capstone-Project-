@@ -2,6 +2,8 @@ import {
   AdminOverview,
   BenchmarkResponse,
   CalibrationRunResponse,
+  CalibrationSettingsPayload,
+  CalibrationSettingsResponse,
   CalibrationStatus,
   EngineAnalyzeResponse,
   EngineCapabilities,
@@ -214,6 +216,12 @@ export const api = {
     request<CalibrationRunResponse>('/forensic-engine/calibrate', {
       method: 'POST',
       body: JSON.stringify({ dept_id: deptId }),
+    }),
+  // Per-company calibration settings, changed from the page and live at once (no restart).
+  engineUpdateCalibrationSettings: (deptId: string, payload: CalibrationSettingsPayload) =>
+    request<CalibrationSettingsResponse>('/forensic-engine/calibration-settings', {
+      method: 'PUT',
+      body: JSON.stringify({ dept_id: deptId, ...payload }),
     }),
   engineReviewQueue: (deptId: string) => request<ReviewQueue>(`/forensic-engine/dept/${deptId}/review-queue`),
   engineSubmitReview: (payload: {
