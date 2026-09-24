@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.router import get_current_user
 from app.database import get_db
-from app.models import Anomaly, CaseAssignment, CaseTransaction, Department, Transaction, User
+from app.models import Anomaly, CaseAssignment, CaseTransaction, Department, Transaction, UploadBatch, User
 
 router = APIRouter(prefix="/forensic", tags=["Forensic"])
 
@@ -22,6 +22,7 @@ class ForensicRequest(BaseModel):
     dept_id: str
     month: int
     year: int
+    upload_batch_id: str | None = None
     zscore_threshold: float = 3.0
     rsf_threshold: float = 10.0
     benford_threshold: float = 0.2
@@ -105,15 +106,34 @@ def run_forensic_analysis(payload: ForensicRequest, current_user: User = Depends
     if not department:
         raise HTTPException(status_code=404, detail="Department not found")
 
+    batch = None
+    if payload.upload_batch_id:
+        batch = (
+            db.query(UploadBatch)
+            .filter(UploadBatch.department_id == payload.dept_id)
+            .filter(UploadBatch.upload_batch_id == payload.upload_batch_id)
+            .first()
+        )
+        if not batch:
+            raise HTTPException(status_code=404, detail="Upload batch not found for department")
+
     start, end = month_bounds(payload.year, payload.month)
-    transactions = (
+    transaction_query = (
         db.query(Transaction)
         .filter(Transaction.department_id == payload.dept_id)
         .filter(Transaction.transaction_date >= start, Transaction.transaction_date < end)
-        .all()
     )
+    if payload.upload_batch_id:
+        transaction_query = transaction_query.filter(Transaction.upload_batch_id == payload.upload_batch_id)
+    transactions = transaction_query.all()
     if not transactions:
-        return {"success": True, "message": "No transactions for period", "total_anomalies": 0}
+        return {
+            "success": True,
+            "message": "No transactions for selected file and period" if payload.upload_batch_id else "No transactions for period",
+            "total_anomalies": 0,
+            "upload_batch_id": payload.upload_batch_id,
+            "source_file_name": batch.source_file_name if batch else None,
+        }
 
     reset_period_forensic_flags(db, transactions)
 
@@ -122,6 +142,11 @@ def run_forensic_analysis(payload: ForensicRequest, current_user: User = Depends
     zscore_count = 0
     rsf_count = 0
     period_label = f"{payload.year}-{payload.month:02d}"
+    case_label = f"{period_label} - {batch.source_file_name}" if batch else period_label
+    batch_context = {
+        "upload_batch_id": payload.upload_batch_id,
+        "source_file_name": batch.source_file_name if batch else None,
+    }
 
     analysis_transactions = [txn for txn in transactions if float(txn.amount) > 0]
 
@@ -134,7 +159,7 @@ def run_forensic_analysis(payload: ForensicRequest, current_user: User = Depends
         if abs((digit_counts.get(digit, 0) / total_digits) - expected) >= payload.benford_threshold
     }
     if deviating_digits:
-        ensure_case(db, payload.dept_id, "benford", period_label)
+        ensure_case(db, payload.dept_id, "benford", case_label)
     for txn in analysis_transactions:
         leading_digit = int(str(int(abs(float(txn.amount))))[0])
         if leading_digit in deviating_digits:
@@ -143,6 +168,7 @@ def run_forensic_analysis(payload: ForensicRequest, current_user: User = Depends
                 "observed_frequency": digit_counts.get(leading_digit, 0) / total_digits,
                 "expected_frequency": BENFORD[leading_digit],
                 "period": period_label,
+                **batch_context,
             }
             _, created = upsert_anomaly(db, txn, "benford", evidence["observed_frequency"], payload.benford_threshold, evidence)
             txn.is_flagged = True
@@ -165,7 +191,7 @@ def run_forensic_analysis(payload: ForensicRequest, current_user: User = Depends
                 for txn in cohort:
                     z_score = abs((float(txn.amount) - avg) / std)
                     if z_score > payload.zscore_threshold:
-                        evidence = {"group_name": group_name, "mean": avg, "std": std, "period": period_label}
+                        evidence = {"group_name": group_name, "mean": avg, "std": std, "period": period_label, **batch_context}
                         _, created = upsert_anomaly(db, txn, "zscore", z_score, payload.zscore_threshold, evidence)
                         txn.is_flagged = True
                         txn.flagged_reason = f"Z-score anomaly in {group_name}"
@@ -180,7 +206,7 @@ def run_forensic_analysis(payload: ForensicRequest, current_user: User = Depends
                 for txn in cohort:
                     rsf = float(txn.amount) / cohort_median
                     if rsf > payload.rsf_threshold:
-                        evidence = {"group_name": group_name, "median": cohort_median, "period": period_label}
+                        evidence = {"group_name": group_name, "median": cohort_median, "period": period_label, **batch_context}
                         _, created = upsert_anomaly(db, txn, "rsf", rsf, payload.rsf_threshold, evidence)
                         txn.is_flagged = True
                         txn.flagged_reason = f"Relative size factor anomaly in {group_name}"
@@ -190,7 +216,7 @@ def run_forensic_analysis(payload: ForensicRequest, current_user: User = Depends
                             total_created += 1
 
     if total_created:
-        case = ensure_case(db, payload.dept_id, "forensic", period_label)
+        case = ensure_case(db, payload.dept_id, "forensic", case_label)
         for txn in transactions:
             if txn.is_flagged and not db.query(CaseTransaction).filter(CaseTransaction.transaction_id == txn.transaction_id).first():
                 db.add(CaseTransaction(transaction_id=txn.transaction_id, resolved=False))
@@ -202,12 +228,24 @@ def run_forensic_analysis(payload: ForensicRequest, current_user: User = Depends
         "zscore_anomalies": zscore_count,
         "rsf_anomalies": rsf_count,
         "total_anomalies": total_created,
+        "upload_batch_id": payload.upload_batch_id,
+        "source_file_name": batch.source_file_name if batch else None,
     }
 
 
 @router.get("/dept/{dept_id}/anomalies")
-def get_anomalies(dept_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    anomalies = db.query(Anomaly).filter(Anomaly.department_id == dept_id).order_by(Anomaly.created_at.desc()).all()
+def get_anomalies(
+    dept_id: str,
+    upload_batch_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    query = db.query(Anomaly).filter(Anomaly.department_id == dept_id)
+    if upload_batch_id:
+        query = query.join(Transaction, Transaction.transaction_id == Anomaly.transaction_id).filter(
+            Transaction.upload_batch_id == upload_batch_id
+        )
+    anomalies = query.order_by(Anomaly.created_at.desc()).all()
     return [
         {
             "anomaly_id": anomaly.anomaly_id,

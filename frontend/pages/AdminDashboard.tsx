@@ -90,6 +90,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [sourceMode, setSourceMode] = useState<ForecastSourceMode>('latest_batch');
   const [uploadBatches, setUploadBatches] = useState<UploadBatchSummary[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState('');
+  const [selectedForensicBatchId, setSelectedForensicBatchId] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [budgetDraft, setBudgetDraft] = useState('');
@@ -154,13 +155,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
 
   const loadForensicData = async (departmentId: string, shouldApply = () => true) => {
     if (!departmentId) return;
-    const [transactionData, anomalyData] = await Promise.all([
+    const [transactionData, anomalyData, batchData] = await Promise.all([
       api.transactions(departmentId, { limit: 500 }),
       api.anomalies(departmentId),
+      api.uploadBatches(departmentId),
     ]);
     if (!shouldApply()) return;
     setTransactions(transactionData);
     setAnomalies(anomalyData);
+    setUploadBatches(batchData);
   };
 
   const loadControlData = async (departmentId: string, shouldApply = () => true) => {
@@ -304,6 +307,16 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   }, [sourceMode, uploadBatches, selectedBatchId]);
 
   useEffect(() => {
+    if (!uploadBatches.length) {
+      setSelectedForensicBatchId('');
+      return;
+    }
+    if (!uploadBatches.some((batch) => batch.upload_batch_id === selectedForensicBatchId)) {
+      setSelectedForensicBatchId(uploadBatches[0].upload_batch_id);
+    }
+  }, [uploadBatches, selectedForensicBatchId]);
+
+  useEffect(() => {
     if (!selectedAnomaly && !selectedExpenseGroup) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -380,6 +393,17 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     [uploadBatches, selectedBatchId],
   );
 
+  const selectedForensicBatch = useMemo(
+    () => uploadBatches.find((batch) => batch.upload_batch_id === selectedForensicBatchId) || null,
+    [uploadBatches, selectedForensicBatchId],
+  );
+
+  useEffect(() => {
+    if (selectedForensicBatch?.first_transaction_date) {
+      setForensicMonth(selectedForensicBatch.first_transaction_date.slice(0, 7));
+    }
+  }, [selectedForensicBatch?.upload_batch_id]);
+
   const isDepartmentSwitching = departmentLoading || forecastLoading;
 
   const handleDepartmentSelect = (departmentId: string) => {
@@ -399,6 +423,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     setLedgerPage(null);
     setLedgerOffset(0);
     setLedgerBatchFilter('all');
+    setSelectedForensicBatchId('');
+    setForensicResult(null);
     setDepartmentLoading(true);
     setTransactionsLoading(activePath === '/history' || activePath === '/audit-logs' || activePath === '/forensic' || activePath === '/forensic-engine');
     setControlDataLoading(activePath === '/dept-control' || activePath === '/dept-status');
@@ -412,8 +438,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   }, [transactions]);
 
   const activeAnomalies = useMemo(
-    () => anomalies.filter((anomaly) => !anomaly.is_resolved),
-    [anomalies],
+    () => anomalies.filter((anomaly) => {
+      if (anomaly.is_resolved || !selectedForensicBatchId) return false;
+      return transactionById.get(anomaly.transaction_id)?.upload_batch_id === selectedForensicBatchId;
+    }),
+    [anomalies, selectedForensicBatchId, transactionById],
   );
 
   const activeAnomalyCount = departmentSummary?.active_anomaly_count ?? activeAnomalies.length;
@@ -430,6 +459,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       { benford: 0, zscore: 0, rsf: 0 },
     );
   }, [activeAnomalies]);
+
+  const currentForensicResult = useMemo(() => {
+    if (!forensicResult) return null;
+    if (forensicResult.upload_batch_id && forensicResult.upload_batch_id !== selectedForensicBatchId) return null;
+    return forensicResult;
+  }, [forensicResult, selectedForensicBatchId]);
 
   const flaggedRows = useMemo(() => {
     const rows = new Map<string, { transaction: Transaction | null; anomalies: Anomaly[] }>();
@@ -451,21 +486,26 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
 
   const runForensicAnalysis = async () => {
     if (!selectedDeptId) return;
+    if (!selectedForensicBatchId) {
+      setStatus('Choose an uploaded transaction file before running forensic scan.');
+      return;
+    }
     const { month, year } = parseForensicMonth();
+    const batchLabel = selectedForensicBatch?.source_file_name || 'selected file';
     try {
-      setStatus(`Running forensic scan for ${formatMonthLabel(`${year}-${String(month).padStart(2, '0')}`)}...`);
-      const result = await api.runForensic(selectedDeptId, month, year);
+      setStatus(`Running forensic scan for ${batchLabel} in ${formatMonthLabel(`${year}-${String(month).padStart(2, '0')}`)}...`);
+      const result = await api.runForensic(selectedDeptId, month, year, selectedForensicBatchId);
       setForensicResult(result);
       await loadDepartmentData(selectedDeptId);
       await loadForensicData(selectedDeptId);
 
       if (result.message) {
-        setStatus(result.message);
+        setStatus(`${result.message} in ${batchLabel}.`);
         return;
       }
 
       setStatus(
-        `Forensic completed: ${result.total_anomalies} anomalies found ` +
+        `Forensic completed for ${batchLabel}: ${result.total_anomalies} anomalies found ` +
         `(Benford: ${result.benford_anomalies || 0}, Z-score: ${result.zscore_anomalies || 0}, RSF: ${result.rsf_anomalies || 0}).`
       );
     } catch (err) {
@@ -485,10 +525,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     }
     try {
       setStatus('Uploading monthly forensic ledger...');
-      await api.uploadTransactions(selectedDeptId, forensicFile);
+      const upload = await api.uploadTransactions(selectedDeptId, forensicFile);
       await loadDepartmentData(selectedDeptId);
       await loadForensicData(selectedDeptId);
-      setStatus('Monthly transaction data uploaded. Run forensic scan next.');
+      setSelectedForensicBatchId(upload.upload_batch_id);
+      setStatus('Monthly transaction data uploaded. This file is selected for forensic review.');
       setForensicFile(null);
     } catch (err) {
       setStatus(err instanceof Error ? err.message : 'Unable to upload forensic data.');
@@ -1467,23 +1508,44 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         </form>
 
         <div className={`${shellCard} p-7`}>
-          <SectionKicker title="Detection Laws" subtitle="Run the backend forensic checks against the selected month." />
-          <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+          <SectionKicker title="Detection Laws" subtitle="Choose a transaction file, then run the backend forensic checks against the selected month." />
+          <div className="mt-6 rounded-[26px] border border-slate-200 bg-slate-50 p-4">
+            <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Review File</label>
+            <select
+              value={selectedForensicBatchId}
+              onChange={(event) => setSelectedForensicBatchId(event.target.value)}
+              disabled={!uploadBatches.length}
+              className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100"
+            >
+              {!uploadBatches.length && <option value="">No uploaded files yet</option>}
+              {uploadBatches.map((batch) => (
+                <option key={batch.upload_batch_id} value={batch.upload_batch_id}>
+                  {batch.source_file_name} ({batch.transaction_count} rows)
+                </option>
+              ))}
+            </select>
+            {selectedForensicBatch && (
+              <p className="mt-2 text-xs font-medium text-slate-500">
+                Range: {selectedForensicBatch.first_transaction_date || 'N/A'} to {selectedForensicBatch.last_transaction_date || 'N/A'}
+              </p>
+            )}
+          </div>
+          <div className="mt-5 grid grid-cols-1 md:grid-cols-3 gap-4">
             <ForensicLawCard title="Benford" value={anomalyCounts.benford} description="Flags unusual leading-digit distributions." />
             <ForensicLawCard title="Z-score" value={anomalyCounts.zscore} description="Flags outliers inside transaction groups." />
             <ForensicLawCard title="RSF" value={anomalyCounts.rsf} description="Flags amounts far above their cohort median." />
           </div>
 
-          <button type="button" disabled={!selectedDeptId} onClick={runForensicAnalysis} className={`mt-6 inline-flex w-full items-center justify-center gap-2 rounded-[24px] px-5 py-4 font-black text-white shadow-[0_20px_40px_rgba(239,68,68,0.20)] transition ${selectedDeptId ? 'bg-red-600 hover:bg-red-700' : 'bg-slate-300 cursor-not-allowed'}`}>
+          <button type="button" disabled={!selectedDeptId || !selectedForensicBatchId} onClick={runForensicAnalysis} className={`mt-6 inline-flex w-full items-center justify-center gap-2 rounded-[24px] px-5 py-4 font-black text-white shadow-[0_20px_40px_rgba(239,68,68,0.20)] transition ${selectedDeptId && selectedForensicBatchId ? 'bg-red-600 hover:bg-red-700' : 'bg-slate-300 cursor-not-allowed'}`}>
             <AlertTriangle size={18} />
             Run Forensic Scan
           </button>
 
-          {forensicResult && (
+          {currentForensicResult && (
             <div className="mt-5 rounded-[24px] border border-slate-200 bg-slate-50 p-5">
               <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Latest Run</p>
               <p className="mt-2 text-sm font-semibold text-slate-700">
-                {forensicResult.message || `${forensicResult.total_anomalies} anomalies detected for ${formatMonthLabel(forensicMonth)}.`}
+                {currentForensicResult.message || `${currentForensicResult.total_anomalies} anomalies detected for ${currentForensicResult.source_file_name || selectedForensicBatch?.source_file_name || 'selected file'} in ${formatMonthLabel(forensicMonth)}.`}
               </p>
             </div>
           )}
@@ -1537,7 +1599,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
                 </div>
                 <div>
                   <p className="font-black text-slate-950">No generated flags yet</p>
-                  <p className="mt-1 text-sm text-slate-500">Upload a monthly ledger, choose the month, then run the forensic scan.</p>
+                  <p className="mt-1 text-sm text-slate-500">Upload or select a ledger file, choose the month, then run the forensic scan for that file.</p>
                 </div>
               </div>
             </div>
