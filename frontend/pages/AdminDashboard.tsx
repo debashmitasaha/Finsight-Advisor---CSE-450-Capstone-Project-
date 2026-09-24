@@ -153,14 +153,18 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     setTransactions(transactionData);
   };
 
-  const loadForensicData = async (departmentId: string, shouldApply = () => true) => {
+  const loadForensicData = async (
+    departmentId: string,
+    options: { uploadBatchId?: string | null; shouldApply?: () => boolean } = {},
+  ) => {
     if (!departmentId) return;
+    const uploadBatchId = options.uploadBatchId || null;
     const [transactionData, anomalyData, batchData] = await Promise.all([
-      api.transactions(departmentId, { limit: 500 }),
-      api.anomalies(departmentId),
+      api.transactions(departmentId, { limit: 500, uploadBatchId }),
+      api.anomalies(departmentId, uploadBatchId),
       api.uploadBatches(departmentId),
     ]);
-    if (!shouldApply()) return;
+    if (options.shouldApply && !options.shouldApply()) return;
     setTransactions(transactionData);
     setAnomalies(anomalyData);
     setUploadBatches(batchData);
@@ -272,7 +276,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
 
     if (activePath === '/forensic' || activePath === '/forensic-engine') {
       setTransactionsLoading(true);
-      loadForensicData(departmentId, () => !cancelled)
+      loadForensicData(departmentId, { uploadBatchId: selectedForensicBatchId || null, shouldApply: () => !cancelled })
         .catch((err) => setStatus(err.message))
         .finally(() => {
           if (!cancelled) setTransactionsLoading(false);
@@ -290,7 +294,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     return () => {
       cancelled = true;
     };
-  }, [selectedDeptId, activePath]);
+  }, [selectedDeptId, activePath, selectedForensicBatchId]);
 
   useEffect(() => {
     if (sourceMode !== 'upload_batch') {
@@ -306,15 +310,20 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     }
   }, [sourceMode, uploadBatches, selectedBatchId]);
 
+  const forensicReviewBatches = useMemo(
+    () => uploadBatches.filter((batch) => Number(batch.transaction_count || 0) > 0),
+    [uploadBatches],
+  );
+
   useEffect(() => {
-    if (!uploadBatches.length) {
+    if (!forensicReviewBatches.length) {
       setSelectedForensicBatchId('');
       return;
     }
-    if (!uploadBatches.some((batch) => batch.upload_batch_id === selectedForensicBatchId)) {
-      setSelectedForensicBatchId(uploadBatches[0].upload_batch_id);
+    if (!forensicReviewBatches.some((batch) => batch.upload_batch_id === selectedForensicBatchId)) {
+      setSelectedForensicBatchId(forensicReviewBatches[0].upload_batch_id);
     }
-  }, [uploadBatches, selectedForensicBatchId]);
+  }, [forensicReviewBatches, selectedForensicBatchId]);
 
   useEffect(() => {
     if (!selectedAnomaly && !selectedExpenseGroup) return;
@@ -394,8 +403,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   );
 
   const selectedForensicBatch = useMemo(
-    () => uploadBatches.find((batch) => batch.upload_batch_id === selectedForensicBatchId) || null,
-    [uploadBatches, selectedForensicBatchId],
+    () => forensicReviewBatches.find((batch) => batch.upload_batch_id === selectedForensicBatchId) || null,
+    [forensicReviewBatches, selectedForensicBatchId],
   );
 
   useEffect(() => {
@@ -440,7 +449,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const activeAnomalies = useMemo(
     () => anomalies.filter((anomaly) => {
       if (anomaly.is_resolved || !selectedForensicBatchId) return false;
-      return transactionById.get(anomaly.transaction_id)?.upload_batch_id === selectedForensicBatchId;
+      const transactionUploadBatchId = transactionById.get(anomaly.transaction_id)?.upload_batch_id || null;
+      const evidenceUploadBatchId = typeof anomaly.evidence_snapshot?.upload_batch_id === 'string'
+        ? anomaly.evidence_snapshot.upload_batch_id
+        : null;
+      return transactionUploadBatchId === selectedForensicBatchId || evidenceUploadBatchId === selectedForensicBatchId;
     }),
     [anomalies, selectedForensicBatchId, transactionById],
   );
@@ -497,7 +510,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       const result = await api.runForensic(selectedDeptId, month, year, selectedForensicBatchId);
       setForensicResult(result);
       await loadDepartmentData(selectedDeptId);
-      await loadForensicData(selectedDeptId);
+      await loadForensicData(selectedDeptId, { uploadBatchId: selectedForensicBatchId });
 
       if (result.message) {
         setStatus(`${result.message} in ${batchLabel}.`);
@@ -531,7 +544,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       setStatus('Uploading monthly forensic ledger...');
       const upload = await api.uploadTransactions(selectedDeptId, forensicFile);
       await loadDepartmentData(selectedDeptId);
-      await loadForensicData(selectedDeptId);
+      await loadForensicData(selectedDeptId, { uploadBatchId: selectedForensicBatchId });
       setSelectedForensicBatchId(upload.upload_batch_id);
       setStatus('Monthly transaction data uploaded. This file is selected for forensic review.');
       setForensicFile(null);
@@ -544,7 +557,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     try {
       await api.resolveAnomaly(anomalyId);
       await loadDepartmentData(selectedDeptId);
-      await loadForensicData(selectedDeptId);
+      await loadForensicData(selectedDeptId, { uploadBatchId: selectedForensicBatchId });
       if (selectedAnomaly?.anomaly_id === anomalyId) setSelectedAnomaly(null);
       setStatus('Anomaly flag undone.');
     } catch (err) {
@@ -1518,11 +1531,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
             <select
               value={selectedForensicBatchId}
               onChange={(event) => setSelectedForensicBatchId(event.target.value)}
-              disabled={!uploadBatches.length}
+              disabled={!forensicReviewBatches.length}
               className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100"
             >
-              {!uploadBatches.length && <option value="">No uploaded files yet</option>}
-              {uploadBatches.map((batch) => (
+              {!forensicReviewBatches.length && <option value="">No files with saved transactions yet</option>}
+              {forensicReviewBatches.map((batch) => (
                 <option key={batch.upload_batch_id} value={batch.upload_batch_id}>
                   {batch.source_file_name} ({batch.transaction_count} rows)
                 </option>
