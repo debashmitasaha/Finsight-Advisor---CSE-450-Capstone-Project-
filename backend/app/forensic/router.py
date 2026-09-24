@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.router import get_current_user
 from app.database import get_db
+from app.grouping.router import assign_groups_for_department
 from app.models import Anomaly, CaseAssignment, CaseTransaction, Department, Transaction, UploadBatch, User
 
 router = APIRouter(prefix="/forensic", tags=["Forensic"])
@@ -49,7 +50,11 @@ def ensure_case(db: Session, dept_id: str, anomaly_type: str, period_label: str)
 
 
 def cohort_key(txn: Transaction) -> str:
-    return txn.cleaned_chart_acc_head or txn.chart_acc_head or txn.group_name or "ungrouped"
+    if txn.group_name:
+        return txn.group_name
+    if txn.group_no is not None:
+        return f"group_{int(float(txn.group_no))}"
+    return txn.cleaned_chart_acc_head or txn.chart_acc_head or txn.account_head_group or "ungrouped"
 
 
 def reset_period_forensic_flags(db: Session, transactions: list[Transaction]) -> None:
@@ -117,6 +122,8 @@ def run_forensic_analysis(payload: ForensicRequest, current_user: User = Depends
         if not batch:
             raise HTTPException(status_code=404, detail="Upload batch not found for department")
 
+    grouping_result = assign_groups_for_department(db, payload.dept_id)
+
     start, end = month_bounds(payload.year, payload.month)
     transaction_query = (
         db.query(Transaction)
@@ -133,6 +140,10 @@ def run_forensic_analysis(payload: ForensicRequest, current_user: User = Depends
             "total_anomalies": 0,
             "upload_batch_id": payload.upload_batch_id,
             "source_file_name": batch.source_file_name if batch else None,
+            "grouping": {
+                "groups_assigned": grouping_result.groups_assigned,
+                "new_groups_created": grouping_result.new_groups_created,
+            },
         }
 
     reset_period_forensic_flags(db, transactions)
@@ -143,6 +154,10 @@ def run_forensic_analysis(payload: ForensicRequest, current_user: User = Depends
     rsf_count = 0
     period_label = f"{payload.year}-{payload.month:02d}"
     case_label = f"{period_label} - {batch.source_file_name}" if batch else period_label
+    grouping_summary = {
+        "groups_assigned": grouping_result.groups_assigned,
+        "new_groups_created": grouping_result.new_groups_created,
+    }
     batch_context = {
         "upload_batch_id": payload.upload_batch_id,
         "source_file_name": batch.source_file_name if batch else None,
@@ -230,6 +245,7 @@ def run_forensic_analysis(payload: ForensicRequest, current_user: User = Depends
         "total_anomalies": total_created,
         "upload_batch_id": payload.upload_batch_id,
         "source_file_name": batch.source_file_name if batch else None,
+        "grouping": grouping_summary,
     }
 
 

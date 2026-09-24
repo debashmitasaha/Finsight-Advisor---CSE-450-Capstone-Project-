@@ -221,6 +221,10 @@ export interface ForensicRunResponse {
   total_anomalies: number;
   upload_batch_id?: string | null;
   source_file_name?: string | null;
+  grouping?: {
+    groups_assigned: number;
+    new_groups_created: number;
+  };
 }
 
 export interface Anomaly {

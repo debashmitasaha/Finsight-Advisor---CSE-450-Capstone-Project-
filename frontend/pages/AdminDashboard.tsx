@@ -504,9 +504,13 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         return;
       }
 
+      const groupingNote = result.grouping
+        ? ` Grouping refreshed ${result.grouping.groups_assigned} transactions (${result.grouping.new_groups_created} new groups).`
+        : '';
       setStatus(
         `Forensic completed for ${batchLabel}: ${result.total_anomalies} anomalies found ` +
-        `(Benford: ${result.benford_anomalies || 0}, Z-score: ${result.zscore_anomalies || 0}, RSF: ${result.rsf_anomalies || 0}).`
+        `(Benford: ${result.benford_anomalies || 0}, Z-score: ${result.zscore_anomalies || 0}, RSF: ${result.rsf_anomalies || 0}).` +
+        groupingNote
       );
     } catch (err) {
       setStatus(err instanceof Error ? err.message : 'Unable to run forensic scan.');

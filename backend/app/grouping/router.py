@@ -43,20 +43,28 @@ def assign_transaction_groups(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    department = db.query(Department).filter(Department.department_id == payload.dept_id).first()
+    return assign_groups_for_department(db, payload.dept_id, payload.similarity_threshold)
+
+
+def assign_groups_for_department(
+    db: Session,
+    dept_id: str,
+    similarity_threshold: float = 0.7,
+) -> AssignGroupsResponse:
+    department = db.query(Department).filter(Department.department_id == dept_id).first()
     if not department:
         raise HTTPException(status_code=404, detail="Department not found")
 
     transactions = (
         db.query(Transaction)
-        .filter(Transaction.department_id == payload.dept_id)
+        .filter(Transaction.department_id == dept_id)
         .order_by(Transaction.transaction_date.asc())
         .all()
     )
     if not transactions:
         return AssignGroupsResponse(success=True, groups_assigned=0, new_groups_created=0)
 
-    existing_groups = db.query(Group).filter(Group.dept_id == payload.dept_id).order_by(Group.group_no.asc()).all()
+    existing_groups = db.query(Group).filter(Group.dept_id == dept_id).order_by(Group.group_no.asc()).all()
     transaction_texts = [transaction_group_text(txn) for txn in transactions]
     transaction_embeddings = encode_texts(transaction_texts)
 
@@ -102,7 +110,7 @@ def assign_transaction_groups(
                 best_score = score
                 best_match = group
 
-        if best_match and best_score >= payload.similarity_threshold:
+        if best_match and best_score >= similarity_threshold:
             txn.group_no = best_match.group_no
             txn.group_name = best_match.group_name or f"group_{int(float(best_match.group_no))}"
             groups_assigned += 1
@@ -112,8 +120,8 @@ def assign_transaction_groups(
         next_group_no += 1
         group_name = f"group_{int(group_number)}"
         new_group = Group(
-            dept_id=payload.dept_id,
-            chart_acc_head_name=group_key_for_new_group(payload.dept_id, group_number),
+            dept_id=dept_id,
+            chart_acc_head_name=group_key_for_new_group(dept_id, group_number),
             group_no=group_number,
             group_name=group_name,
             representative_text=text,
