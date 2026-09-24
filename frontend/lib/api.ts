@@ -28,6 +28,7 @@ import {
   Transaction,
   TransactionPage,
   UploadBatchSummary,
+  UploadTransactionsResponse,
   UserAccount,
 } from '../types';
 const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8000';
@@ -89,7 +90,7 @@ export const api = {
     const form = new FormData();
     form.append('dept_id', deptId);
     form.append('file', file);
-    return request('/transactions/upload', { method: 'POST', body: form });
+    return request<UploadTransactionsResponse>('/transactions/upload', { method: 'POST', body: form });
   },
   transactions: (deptId: string, options: { limit?: number; offset?: number; uploadBatchId?: string | null; groupNo?: number | null; chartAccHeadName?: string | null } = {}) => {
     const params = new URLSearchParams();
@@ -173,11 +174,16 @@ export const api = {
     if (options.dateTo) params.set('date_to', options.dateTo);
     return request<ForecastContextResponse>(`/budget/dept/${deptId}/forecast-context?${params.toString()}`);
   },
-  runForensic: (deptId: string, month: number, year: number) => request<ForensicRunResponse>('/forensic/analyze', {
+  runForensic: (deptId: string, month: number, year: number, uploadBatchId?: string | null) => request<ForensicRunResponse>('/forensic/analyze', {
     method: 'POST',
-    body: JSON.stringify({ dept_id: deptId, month, year }),
+    body: JSON.stringify({ dept_id: deptId, month, year, upload_batch_id: uploadBatchId ?? null }),
   }),
-  anomalies: (deptId: string) => request<Anomaly[]>(`/forensic/dept/${deptId}/anomalies`),
+  anomalies: (deptId: string, uploadBatchId?: string | null) => {
+    const params = new URLSearchParams();
+    if (uploadBatchId) params.set('upload_batch_id', uploadBatchId);
+    const query = params.toString();
+    return request<Anomaly[]>(`/forensic/dept/${deptId}/anomalies${query ? `?${query}` : ''}`);
+  },
   resolveAnomaly: (anomalyId: string) => request<{ success: boolean; anomaly_id: string }>(`/forensic/anomaly/${anomalyId}/resolve`, { method: 'PATCH' }),
 
   // --- Forensic Intelligence Engine ---

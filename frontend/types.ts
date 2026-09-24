@@ -161,6 +161,15 @@ export interface UploadBatchSummary {
   last_transaction_date: string | null;
 }
 
+export interface UploadTransactionsResponse {
+  success: boolean;
+  upload_batch_id: string;
+  rows_processed: number;
+  rows_failed: number;
+  duplicate_rows: number;
+  failed_rows: { row: number; error: string }[];
+}
+
 export interface ExpenseCategory {
   category_id: string;
   company_id: string | null;
@@ -210,6 +219,8 @@ export interface ForensicRunResponse {
   zscore_anomalies?: number;
   rsf_anomalies?: number;
   total_anomalies: number;
+  upload_batch_id?: string | null;
+  source_file_name?: string | null;
 }
 
 export interface Anomaly {
