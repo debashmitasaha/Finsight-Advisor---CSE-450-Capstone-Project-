@@ -6,11 +6,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.admin.router import router as admin_router
+from app.audit import AuditMiddleware, router as audit_router
 from app.auth.router import router as auth_router
 from app.budget.router import router as budget_router
 from app.categorization.router import router as categorization_router
 from app.database import init_db
 from app.forensic.router import router as forensic_router
+from app.forensic_engine.historical.router import router as historical_router
 from app.forensic_engine.router import router as forensic_engine_router
 from app.grouping.router import router as grouping_router
 from app.seed import seed_demo_data
@@ -32,6 +34,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Added after CORS so it runs inside it: every write by a signed-in user becomes
+# a row the Audit Logs page can show.
+app.add_middleware(AuditMiddleware)
+
 
 @app.on_event("startup")
 def on_startup() -> None:
@@ -51,7 +57,9 @@ app.include_router(categorization_router)
 app.include_router(budget_router)
 app.include_router(forensic_router)
 app.include_router(forensic_engine_router)
+app.include_router(historical_router)
 app.include_router(admin_router)
+app.include_router(audit_router)
 
 
 @app.get("/")

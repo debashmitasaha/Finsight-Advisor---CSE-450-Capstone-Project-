@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from app.forensic_engine.config import EngineConfig
@@ -41,7 +42,7 @@ def _payment_bursts(frame: pd.DataFrame, config: EngineConfig) -> list[Signal]:
     """A cluster of payments to one head far denser than that head's own rhythm."""
     signals: list[Signal] = []
 
-    reported: set[frozenset] = set()
+    span = pd.Timedelta(days=config.burst_window_days)
 
     for head, group in frame.groupby("entity_account_head"):
         if len(group) < config.burst_min_events:
@@ -50,39 +51,50 @@ def _payment_bursts(frame: pd.DataFrame, config: EngineConfig) -> list[Signal]:
         span_days = max((ordered["transaction_date"].max() - ordered["transaction_date"].min()).days, 1)
         typical_per_window = len(ordered) * config.burst_window_days / span_days
 
+        # The rows are sorted, so a window is a contiguous slice and binary search finds
+        # its end. Masking the whole head once per row is what made this quadratic.
+        dates = ordered["transaction_date"].to_numpy()
+        amounts = ordered["amount"].to_numpy(dtype=float)
+        ids = ordered["transaction_id"].to_numpy()
+
+        # Window ends never move backwards as the start advances, so a window sits
+        # inside an already-reported one exactly when it ends no later.
+        last_reported_end = -1
+
         for start in range(len(ordered)):
-            window_end = ordered.at[start, "transaction_date"] + pd.Timedelta(days=config.burst_window_days)
-            window = ordered[
-                (ordered["transaction_date"] >= ordered.at[start, "transaction_date"])
-                & (ordered["transaction_date"] <= window_end)
-            ]
-            if len(window) < config.burst_min_events:
+            # The window opens at the first row sharing this row's timestamp, not at
+            # this row. Ledgers are commonly dated to the day, so several payments carry
+            # the same timestamp and they all belong to the same window.
+            lo = int(np.searchsorted(dates, dates[start], side="left"))
+            end = int(np.searchsorted(dates, dates[start] + span, side="right"))
+            events = end - lo
+            if events < config.burst_min_events:
                 continue
-            intensity = len(window) / max(typical_per_window, 0.5)
+            intensity = events / max(typical_per_window, 0.5)
             if intensity < config.burst_baseline_multiple:
                 continue
 
-            key = frozenset(window["transaction_id"])
-            if key in reported or any(key <= seen for seen in reported):
+            if end <= last_reported_end:
                 continue
-            reported.add(key)
+            last_reported_end = end
 
             strength = ramp(intensity, config.burst_baseline_multiple, config.burst_baseline_multiple * 4)
-            for transaction_id in window["transaction_id"]:
+            window_total = float(amounts[lo:end].sum())
+            for transaction_id in ids[lo:end]:
                 signals.append(
                     Signal(
                         transaction_id,
                         VIEW,
                         "payment_burst",
                         strength,
-                        f"{len(window)} payments to '{head}' inside {config.burst_window_days} day(s), {intensity:.1f}x its usual pace",
+                        f"{events} payments to '{head}' inside {config.burst_window_days} day(s), {intensity:.1f}x its usual pace",
                         {
                             "account_head": head,
-                            "events_in_window": int(len(window)),
+                            "events_in_window": int(events),
                             "window_days": config.burst_window_days,
                             "expected_in_window": round(typical_per_window, 2),
                             "intensity": round(intensity, 2),
-                            "window_total": float(window["amount"].sum()),
+                            "window_total": window_total,
                         },
                     )
                 )
@@ -181,19 +193,28 @@ def _velocity_spikes(frame: pd.DataFrame, config: EngineConfig) -> list[Signal]:
         if overall_rate <= 0:
             continue
 
+        # The trailing window is a contiguous slice of the sorted rows, so its bounds
+        # come from binary search and its total from a running sum, rather than from
+        # masking the whole head once per row.
+        dates = ordered["transaction_date"].to_numpy()
+        amounts = ordered["amount"].to_numpy(dtype=float)
+        ids = ordered["transaction_id"].to_numpy()
+        cumulative = np.concatenate(([0.0], np.cumsum(amounts)))
+
         for position in range(len(ordered)):
-            current = ordered.at[position, "transaction_date"]
-            window = ordered[(ordered["transaction_date"] > current - lookback) & (ordered["transaction_date"] <= current)]
-            if len(window) < 3:
+            current = dates[position]
+            lo = int(np.searchsorted(dates, current - lookback, side="right"))
+            hi = int(np.searchsorted(dates, current, side="right"))
+            if hi - lo < 3:
                 continue
-            window_rate = float(window["amount"].sum()) / config.velocity_lookback_days
+            window_rate = float(cumulative[hi] - cumulative[lo]) / config.velocity_lookback_days
             ratio = window_rate / overall_rate
             strength = ramp(ratio, 3.0, 12.0) * 0.8
             if strength <= 0:
                 continue
             signals.append(
                 Signal(
-                    ordered.at[position, "transaction_id"],
+                    ids[position],
                     VIEW,
                     "spending_velocity_spike",
                     strength,

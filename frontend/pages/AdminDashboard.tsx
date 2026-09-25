@@ -11,8 +11,10 @@ import {
   ChevronRight,
   Clock,
   CircleDollarSign,
+  Database,
   Eye,
   FileUp,
+  GitCompare,
   Plus,
   Radar,
   Shield,
@@ -33,6 +35,8 @@ import {
   CartesianGrid,
   Cell,
   Legend,
+  Line,
+  LineChart,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -41,6 +45,9 @@ import {
 } from 'recharts';
 import Layout from '../components/Layout';
 import LoadingState from '../components/LoadingState';
+import AuditLogPanel from '../components/AuditLogPanel';
+import LedgerHistory from '../components/LedgerHistory';
+import { InfoDot, Tip } from '../components/ForensicKit';
 import ForensicIntelligence from './ForensicIntelligence';
 import { api } from '../lib/api';
 import {
@@ -50,6 +57,7 @@ import {
   ExpenseCategory,
   ExpenseGroupSummary,
   Forecast,
+  ForecastAccuracyResponse,
   ForecastDiagnostics,
   ForecastSourceMode,
   ForensicRunResponse,
@@ -69,6 +77,8 @@ const shellCard = 'rounded-[32px] border border-slate-200/80 bg-white shadow-[0_
 type ForensicMode = 'rule' | 'engine';
 type ExpenseReviewTab = 'ledger' | 'pending' | 'approved';
 const MAX_ANNUAL_BUDGET = 9_999_999_999_999.99;
+// Mirrors ONGOING_FORECAST_SCOPES in backend/app/budget/router.py.
+const ONGOING_FORECAST_SCOPES = ['latest_batch', 'full_history'];
 const LEDGER_PAGE_SIZE = 50;
 const GROUP_TRANSACTION_PAGE_SIZE = 50;
 const EMPLOYEE_SCOPE_OPTIONS = [
@@ -88,10 +98,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [forecastHistory, setForecastHistory] = useState<{ month: string; amount: number }[]>([]);
   const [forecastDiagnostics, setForecastDiagnostics] = useState<ForecastDiagnostics | null>(null);
   const [forecastModel, setForecastModel] = useState<{ model_type: string; model_version: string } | null>(null);
+  const [forecastAccuracy, setForecastAccuracy] = useState<ForecastAccuracyResponse | null>(null);
   const [monthsAhead, setMonthsAhead] = useState(3);
   const [sourceMode, setSourceMode] = useState<ForecastSourceMode>('latest_batch');
   const [uploadBatches, setUploadBatches] = useState<UploadBatchSummary[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState('');
+  const [selectedForensicBatchId, setSelectedForensicBatchId] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [budgetDraft, setBudgetDraft] = useState('');
@@ -154,15 +166,21 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     setTransactions(transactionData);
   };
 
-  const loadForensicData = async (departmentId: string, shouldApply = () => true) => {
+  const loadForensicData = async (
+    departmentId: string,
+    options: { uploadBatchId?: string | null; shouldApply?: () => boolean } = {},
+  ) => {
     if (!departmentId) return;
-    const [transactionData, anomalyData] = await Promise.all([
-      api.transactions(departmentId, { limit: 500 }),
-      api.anomalies(departmentId),
+    const uploadBatchId = options.uploadBatchId || null;
+    const [transactionData, anomalyData, batchData] = await Promise.all([
+      api.transactions(departmentId, { limit: 500, uploadBatchId }),
+      api.anomalies(departmentId, uploadBatchId),
+      api.uploadBatches(departmentId),
     ]);
-    if (!shouldApply()) return;
+    if (options.shouldApply && !options.shouldApply()) return;
     setTransactions(transactionData);
     setAnomalies(anomalyData);
+    setUploadBatches(batchData);
   };
 
   const loadControlData = async (departmentId: string, shouldApply = () => true) => {
@@ -257,6 +275,25 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
 
   useEffect(() => {
     if (!selectedDeptId) return;
+    const needsAccuracy = activePath === '/dept-status' || activePath === '/reports';
+    if (!needsAccuracy) return;
+
+    let cancelled = false;
+    api
+      .forecastAccuracy(selectedDeptId)
+      .then((response) => {
+        if (!cancelled) setForecastAccuracy(response);
+      })
+      .catch(() => {
+        if (!cancelled) setForecastAccuracy(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDeptId, activePath]);
+
+  useEffect(() => {
+    if (!selectedDeptId) return;
     let cancelled = false;
     const departmentId = selectedDeptId;
 
@@ -271,7 +308,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
 
     if (activePath === '/forensic' || activePath === '/forensic-engine') {
       setTransactionsLoading(true);
-      loadForensicData(departmentId, () => !cancelled)
+      loadForensicData(departmentId, { uploadBatchId: selectedForensicBatchId || null, shouldApply: () => !cancelled })
         .catch((err) => setStatus(err.message))
         .finally(() => {
           if (!cancelled) setTransactionsLoading(false);
@@ -289,7 +326,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     return () => {
       cancelled = true;
     };
-  }, [selectedDeptId, activePath]);
+  }, [selectedDeptId, activePath, selectedForensicBatchId]);
 
   useEffect(() => {
     if (sourceMode !== 'upload_batch') {
@@ -301,9 +338,30 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       return;
     }
     if (!uploadBatches.some((batch) => batch.upload_batch_id === selectedBatchId)) {
-      setSelectedBatchId(uploadBatches[0].upload_batch_id);
+      // Batches are ordered most-recent-first, but "most recent" can be an
+      // upload that never actually linked any transactions (e.g. a failed or
+      // superseded re-upload) -- defaulting to that leaves the picker on a
+      // batch that will just error out. Prefer the most recent one that
+      // actually has data; only fall back to the literal most recent if none do.
+      const defaultBatch = uploadBatches.find((batch) => batch.transaction_count > 0) || uploadBatches[0];
+      setSelectedBatchId(defaultBatch.upload_batch_id);
     }
   }, [sourceMode, uploadBatches, selectedBatchId]);
+
+  const forensicReviewBatches = useMemo(
+    () => uploadBatches.filter((batch) => Number(batch.transaction_count || 0) > 0),
+    [uploadBatches],
+  );
+
+  useEffect(() => {
+    if (!forensicReviewBatches.length) {
+      setSelectedForensicBatchId('');
+      return;
+    }
+    if (!forensicReviewBatches.some((batch) => batch.upload_batch_id === selectedForensicBatchId)) {
+      setSelectedForensicBatchId(forensicReviewBatches[0].upload_batch_id);
+    }
+  }, [forensicReviewBatches, selectedForensicBatchId]);
 
   useEffect(() => {
     if (!selectedAnomaly && !selectedExpenseGroup) return;
@@ -382,6 +440,17 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     [uploadBatches, selectedBatchId],
   );
 
+  const selectedForensicBatch = useMemo(
+    () => forensicReviewBatches.find((batch) => batch.upload_batch_id === selectedForensicBatchId) || null,
+    [forensicReviewBatches, selectedForensicBatchId],
+  );
+
+  useEffect(() => {
+    if (selectedForensicBatch?.first_transaction_date) {
+      setForensicMonth(selectedForensicBatch.first_transaction_date.slice(0, 7));
+    }
+  }, [selectedForensicBatch?.upload_batch_id]);
+
   const isDepartmentSwitching = departmentLoading || forecastLoading;
 
   const handleDepartmentSelect = (departmentId: string) => {
@@ -401,6 +470,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     setLedgerPage(null);
     setLedgerOffset(0);
     setLedgerBatchFilter('all');
+    setSelectedForensicBatchId('');
+    setForensicResult(null);
     setDepartmentLoading(true);
     setTransactionsLoading(activePath === '/history' || activePath === '/audit-logs' || activePath === '/forensic' || activePath === '/forensic-engine');
     setControlDataLoading(activePath === '/dept-control' || activePath === '/dept-status');
@@ -414,8 +485,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   }, [transactions]);
 
   const activeAnomalies = useMemo(
-    () => anomalies.filter((anomaly) => !anomaly.is_resolved),
-    [anomalies],
+    () => anomalies.filter((anomaly) => {
+      if (anomaly.is_resolved || !selectedForensicBatchId) return false;
+      const transactionUploadBatchId = transactionById.get(anomaly.transaction_id)?.upload_batch_id || null;
+      const evidenceUploadBatchId = typeof anomaly.evidence_snapshot?.upload_batch_id === 'string'
+        ? anomaly.evidence_snapshot.upload_batch_id
+        : null;
+      return transactionUploadBatchId === selectedForensicBatchId || evidenceUploadBatchId === selectedForensicBatchId;
+    }),
+    [anomalies, selectedForensicBatchId, transactionById],
   );
 
   const activeAnomalyCount = departmentSummary?.active_anomaly_count ?? activeAnomalies.length;
@@ -432,6 +510,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       { benford: 0, zscore: 0, rsf: 0 },
     );
   }, [activeAnomalies]);
+
+  const currentForensicResult = useMemo(() => {
+    if (!forensicResult) return null;
+    if (forensicResult.upload_batch_id && forensicResult.upload_batch_id !== selectedForensicBatchId) return null;
+    return forensicResult;
+  }, [forensicResult, selectedForensicBatchId]);
 
   const flaggedRows = useMemo(() => {
     const rows = new Map<string, { transaction: Transaction | null; anomalies: Anomaly[] }>();
@@ -453,22 +537,31 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
 
   const runForensicAnalysis = async () => {
     if (!selectedDeptId) return;
+    if (!selectedForensicBatchId) {
+      setStatus('Choose an uploaded transaction file before running forensic scan.');
+      return;
+    }
     const { month, year } = parseForensicMonth();
+    const batchLabel = selectedForensicBatch?.source_file_name || 'selected file';
     try {
-      setStatus(`Running forensic scan for ${formatMonthLabel(`${year}-${String(month).padStart(2, '0')}`)}...`);
-      const result = await api.runForensic(selectedDeptId, month, year);
+      setStatus(`Running forensic scan for ${batchLabel} in ${formatMonthLabel(`${year}-${String(month).padStart(2, '0')}`)}...`);
+      const result = await api.runForensic(selectedDeptId, month, year, selectedForensicBatchId);
       setForensicResult(result);
       await loadDepartmentData(selectedDeptId);
-      await loadForensicData(selectedDeptId);
+      await loadForensicData(selectedDeptId, { uploadBatchId: selectedForensicBatchId });
 
       if (result.message) {
-        setStatus(result.message);
+        setStatus(`${result.message} in ${batchLabel}.`);
         return;
       }
 
+      const groupingNote = result.grouping
+        ? ` Grouping refreshed ${result.grouping.groups_assigned} transactions (${result.grouping.new_groups_created} new groups).`
+        : '';
       setStatus(
-        `Forensic completed: ${result.total_anomalies} anomalies found ` +
-        `(Benford: ${result.benford_anomalies || 0}, Z-score: ${result.zscore_anomalies || 0}, RSF: ${result.rsf_anomalies || 0}).`
+        `Forensic completed for ${batchLabel}: ${result.total_anomalies} anomalies found ` +
+        `(Benford: ${result.benford_anomalies || 0}, Z-score: ${result.zscore_anomalies || 0}, RSF: ${result.rsf_anomalies || 0}).` +
+        groupingNote
       );
     } catch (err) {
       setStatus(err instanceof Error ? err.message : 'Unable to run forensic scan.');
@@ -487,10 +580,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     }
     try {
       setStatus('Uploading monthly forensic ledger...');
-      await api.uploadTransactions(selectedDeptId, forensicFile);
+      const upload = await api.uploadTransactions(selectedDeptId, forensicFile);
       await loadDepartmentData(selectedDeptId);
-      await loadForensicData(selectedDeptId);
-      setStatus('Monthly transaction data uploaded. Run forensic scan next.');
+      await loadForensicData(selectedDeptId, { uploadBatchId: selectedForensicBatchId });
+      setSelectedForensicBatchId(upload.upload_batch_id);
+      setStatus('Monthly transaction data uploaded. This file is selected for forensic review.');
       setForensicFile(null);
     } catch (err) {
       setStatus(err instanceof Error ? err.message : 'Unable to upload forensic data.');
@@ -501,7 +595,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     try {
       await api.resolveAnomaly(anomalyId);
       await loadDepartmentData(selectedDeptId);
-      await loadForensicData(selectedDeptId);
+      await loadForensicData(selectedDeptId, { uploadBatchId: selectedForensicBatchId });
       if (selectedAnomaly?.anomaly_id === anomalyId) setSelectedAnomaly(null);
       setStatus('Anomaly flag undone.');
     } catch (err) {
@@ -774,6 +868,53 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       : '';
     return `${selectedDepartment?.department_name || 'This department'} is projected to spend ${amount} in ${formatMonthLabel(nextForecast.forecast_period_start)} (likely range ${range}), using the ${modelLabel} model${coverage}.`;
   }, [nextForecast, forecastModel, forecastDiagnostics, selectedDepartment]);
+
+  // Same pace logic as the backend's budget-pace alert (see
+  // _maybe_create_budget_pace_alert in budget/router.py): year-to-date actual
+  // spend plus the forecasted remaining months of the year, against the
+  // department's annual budget. Computed client-side from data already on
+  // screen so it updates live as the forecast preview changes, independent
+  // of whether an alert has actually fired for this department yet.
+  const budgetPaceStatus = useMemo(() => {
+    const annualBudget = Number(selectedDepartment?.annual_budget || 0);
+    if (!selectedDepartment || annualBudget <= 0) return null;
+    const usedSoFar = Number(selectedDepartment.used_budget_current_year || 0);
+    // Anchored to the department's most recent actual transaction (see
+    // get_budget_reference_date in admin/router.py), not the real wall
+    // clock -- historical/demo data (e.g. all dated 2023) would otherwise
+    // never count as "this year" once the system date moves past it.
+    const now = selectedDepartment.budget_reference_date
+      ? new Date(selectedDepartment.budget_reference_date)
+      : new Date();
+    const projectedRemaining = forecasts
+      .filter((forecast) => {
+        // Mirror the backend's ONGOING_FORECAST_SCOPES: a one-off forecast
+        // scoped to a specific uploaded file must never count toward the
+        // department's real budget pace.
+        if (forecast.source_mode && !ONGOING_FORECAST_SCOPES.includes(forecast.source_mode)) return false;
+        const periodStart = new Date(forecast.forecast_period_start);
+        return periodStart.getFullYear() === now.getFullYear() && periodStart > now;
+      })
+      .reduce((sum, forecast) => sum + forecast.predicted_amount, 0);
+    const usedPct = Math.round((usedSoFar / annualBudget) * 100);
+    const pacePct = Math.round(((usedSoFar + projectedRemaining) / annualBudget) * 100);
+    const tone = pacePct >= 100 ? ('red' as const) : pacePct >= 90 ? ('amber' as const) : ('green' as const);
+    const label = pacePct >= 100 ? 'Over Pace' : pacePct >= 90 ? 'Approaching Budget' : 'On Pace';
+    const reason = projectedRemaining > 0
+      ? `${usedPct}% of budget used so far, on track to reach ${pacePct}% by year end.`
+      : `${usedPct}% of budget used so far. No forecast yet for the rest of the year.`;
+    return { label, pacePct, usedPct, tone, reason };
+  }, [selectedDepartment, forecasts]);
+
+  const forecastAccuracyChartData = useMemo(() => {
+    if (!forecastAccuracy) return [];
+    return forecastAccuracy.entries.map((entry) => ({
+      month: formatShortMonth(entry.month),
+      predicted: Math.round(entry.predicted_amount),
+      actual: entry.error_pct === null ? null : Math.round(entry.actual_amount),
+      errorPct: entry.error_pct,
+    }));
+  }, [forecastAccuracy]);
 
   const departmentBudgetData = useMemo(() => {
     return departments.map((department) => ({
@@ -1415,7 +1556,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
                 <select value={selectedBatchId} onChange={(e) => setSelectedBatchId(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700">
                   {uploadBatches.map((batch) => (
                     <option key={batch.upload_batch_id} value={batch.upload_batch_id}>
-                      {batch.source_file_name} ({batch.transaction_count} rows)
+                      {batch.source_file_name} ({batch.transaction_count} rows{batch.transaction_count === 0 ? ' — no data' : ''})
                     </option>
                   ))}
                 </select>
@@ -1502,23 +1643,44 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         </form>
 
         <div className={`${shellCard} p-7`}>
-          <SectionKicker title="Detection Laws" subtitle="Run the backend forensic checks against the selected month." />
-          <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+          <SectionKicker title="Detection Laws" subtitle="Choose a transaction file, then run the backend forensic checks against the selected month." />
+          <div className="mt-6 rounded-[26px] border border-slate-200 bg-slate-50 p-4">
+            <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">Review File</label>
+            <select
+              value={selectedForensicBatchId}
+              onChange={(event) => setSelectedForensicBatchId(event.target.value)}
+              disabled={!forensicReviewBatches.length}
+              className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100"
+            >
+              {!forensicReviewBatches.length && <option value="">No files with saved transactions yet</option>}
+              {forensicReviewBatches.map((batch) => (
+                <option key={batch.upload_batch_id} value={batch.upload_batch_id}>
+                  {batch.source_file_name} ({batch.transaction_count} rows)
+                </option>
+              ))}
+            </select>
+            {selectedForensicBatch && (
+              <p className="mt-2 text-xs font-medium text-slate-500">
+                Range: {selectedForensicBatch.first_transaction_date || 'N/A'} to {selectedForensicBatch.last_transaction_date || 'N/A'}
+              </p>
+            )}
+          </div>
+          <div className="mt-5 grid grid-cols-1 md:grid-cols-3 gap-4">
             <ForensicLawCard title="Benford" value={anomalyCounts.benford} description="Flags unusual leading-digit distributions." />
             <ForensicLawCard title="Z-score" value={anomalyCounts.zscore} description="Flags outliers inside transaction groups." />
             <ForensicLawCard title="RSF" value={anomalyCounts.rsf} description="Flags amounts far above their cohort median." />
           </div>
 
-          <button type="button" disabled={!selectedDeptId} onClick={runForensicAnalysis} className={`mt-6 inline-flex w-full items-center justify-center gap-2 rounded-[24px] px-5 py-4 font-black text-white shadow-[0_20px_40px_rgba(239,68,68,0.20)] transition ${selectedDeptId ? 'bg-red-600 hover:bg-red-700' : 'bg-slate-300 cursor-not-allowed'}`}>
+          <button type="button" disabled={!selectedDeptId || !selectedForensicBatchId} onClick={runForensicAnalysis} className={`mt-6 inline-flex w-full items-center justify-center gap-2 rounded-[24px] px-5 py-4 font-black text-white shadow-[0_20px_40px_rgba(239,68,68,0.20)] transition ${selectedDeptId && selectedForensicBatchId ? 'bg-red-600 hover:bg-red-700' : 'bg-slate-300 cursor-not-allowed'}`}>
             <AlertTriangle size={18} />
             Run Forensic Scan
           </button>
 
-          {forensicResult && (
+          {currentForensicResult && (
             <div className="mt-5 rounded-[24px] border border-slate-200 bg-slate-50 p-5">
               <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Latest Run</p>
               <p className="mt-2 text-sm font-semibold text-slate-700">
-                {forensicResult.message || `${forensicResult.total_anomalies} anomalies detected for ${formatMonthLabel(forensicMonth)}.`}
+                {currentForensicResult.message || `${currentForensicResult.total_anomalies} anomalies detected for ${currentForensicResult.source_file_name || selectedForensicBatch?.source_file_name || 'selected file'} in ${formatMonthLabel(forensicMonth)}.`}
               </p>
             </div>
           )}
@@ -1572,7 +1734,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
                 </div>
                 <div>
                   <p className="font-black text-slate-950">No generated flags yet</p>
-                  <p className="mt-1 text-sm text-slate-500">Upload a monthly ledger, choose the month, then run the forensic scan.</p>
+                  <p className="mt-1 text-sm text-slate-500">Upload or select a ledger file, choose the month, then run the forensic scan for that file.</p>
                 </div>
               </div>
             </div>
@@ -1718,7 +1880,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[1.35fr,0.65fr] gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-[1.35fr,0.65fr] gap-6 items-start">
+        <div className="space-y-6">
         <div className={`${shellCard} p-7`}>
           <SectionKicker title="Budget Forecast Curve" subtitle="Historical monthly spend extended into the prediction window." />
           {!forecastLoading && forecastSummaryLine && (
@@ -1778,9 +1941,80 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
           </div>
         </div>
 
+        <div className={`${shellCard} p-7`}>
+          <SectionKicker title="Forecast Accuracy" subtitle="Predicted vs. actual, once a month closes." />
+          <div className="mt-5 space-y-3">
+            {forecastAccuracy && forecastAccuracy.entries.length > 0 ? (
+              <>
+                <div className="flex gap-3">
+                  <DataPill
+                    label="Average Error"
+                    value={forecastAccuracy.average_error_pct !== null ? `${forecastAccuracy.average_error_pct}%` : 'N/A'}
+                  />
+                  <DataPill label="Months Evaluated" value={forecastAccuracy.months_evaluated} />
+                </div>
+                <div className="pt-2" style={{ height: 280 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={forecastAccuracyChartData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#EEF2FF" vertical={false} />
+                      <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#94A3B8' }} axisLine={false} tickLine={false} />
+                      <YAxis
+                        tick={{ fontSize: 11, fill: '#94A3B8' }}
+                        axisLine={false}
+                        tickLine={false}
+                        width={48}
+                        tickFormatter={(value) => `${Math.round(Number(value) / 1000)}k`}
+                      />
+                      <Tooltip content={<AccuracyTooltip />} />
+                      <Legend wrapperStyle={{ fontSize: 12 }} />
+                      <Line type="monotone" dataKey="predicted" name="Predicted" stroke="#94A3B8" strokeWidth={2} strokeDasharray="6 4" dot={false} />
+                      <Line
+                        type="monotone"
+                        dataKey="actual"
+                        name="Actual"
+                        stroke="#1D4ED8"
+                        strokeWidth={3}
+                        dot={{ r: 4, fill: '#1D4ED8' }}
+                        connectNulls={false}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-slate-500">
+                No completed months yet. Accuracy appears here once a forecasted month has passed and real spend has come in for it.
+              </p>
+            )}
+          </div>
+        </div>
+        </div>
+
         <div className="space-y-6">
           <div className={`${shellCard} p-7`}>
-            <SectionKicker title="Forecast Summary" subtitle="Current forecast health and coverage." />
+            <div className="flex items-start justify-between gap-4">
+              <SectionKicker title="Forecast Summary" subtitle="Current forecast health and coverage." />
+              {budgetPaceStatus && (
+                <span
+                  className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs font-black uppercase tracking-wide ${
+                    budgetPaceStatus.tone === 'red'
+                      ? 'bg-red-50 text-red-600 border border-red-100'
+                      : budgetPaceStatus.tone === 'amber'
+                        ? 'bg-amber-50 text-amber-600 border border-amber-100'
+                        : 'bg-emerald-50 text-emerald-600 border border-emerald-100'
+                  }`}
+                >
+                  {budgetPaceStatus.label}
+                </span>
+              )}
+            </div>
+            {budgetPaceStatus && (
+              <>
+                <p className="mt-2 text-sm font-medium text-slate-500">{budgetPaceStatus.reason}</p>
+                <BudgetPaceThermometer usedPct={budgetPaceStatus.usedPct} pacePct={budgetPaceStatus.pacePct} tone={budgetPaceStatus.tone} />
+              </>
+            )}
+            <ForecastMethodDiagram />
             <div className="mt-5 space-y-4">
               <DataPill label="Forecast Status" value={forecasts.length ? 'Ready' : 'Pending'} isLoading={forecastLoading} />
               <DataPill label="Latest Model" value={forecastModel?.model_type ? forecastModel.model_type.replace(/_/g, ' ') : 'N/A'} isLoading={forecastLoading} />
@@ -1833,55 +2067,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   );
 
   const historyView = (
-    <div className="space-y-8">
-      <HeroHeader
-        eyebrow="Operational History"
-        title="Recent Transaction Timeline"
-        description="A cleaner ledger table for reviewing recent imported activity."
-      />
-      <div className={`${shellCard} p-7`}>
-        <SectionKicker title="Transaction History" subtitle="Recent imported records for the selected department." />
-        <div className="mt-6 overflow-x-auto">
-          <table className="w-full text-left">
-            <thead>
-              <tr className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">
-                <th className="pb-4">Date</th>
-                <th className="pb-4">Description</th>
-                <th className="pb-4">Amount</th>
-                <th className="pb-4">Group</th>
-                <th className="pb-4">Expense Type</th>
-                <th className="pb-4">Necessity</th>
-              </tr>
-            </thead>
-            <tbody>
-              {transactionsLoading ? (
-                <TransactionTableSkeleton />
-              ) : transactions.slice(0, 30).map((transaction) => (
-                <tr key={transaction.transaction_id} className="border-t border-slate-100 text-sm text-slate-700">
-                  <td className="py-4 font-semibold">{new Date(transaction.transaction_date).toLocaleDateString()}</td>
-                  <td className="py-4">
-                    <p className="font-bold text-slate-900">{transaction.description || 'No description'}</p>
-                    {transaction.flagged_reason && <p className="mt-1 text-xs text-red-500">{transaction.flagged_reason}</p>}
-                  </td>
-                  <td className="py-4 font-bold">TK {transaction.amount.toLocaleString()}</td>
-                  <td className="py-4">{transaction.group_name || 'Not grouped'}</td>
-                  <td className="py-4">
-                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-bold text-slate-600">
-                      {transaction.expense_category_name || 'Unassigned'}
-                    </span>
-                  </td>
-                  <td className="py-4">
-                    <span className={`rounded-full px-3 py-1 text-xs font-bold border ${COLORS[transaction.category || 'uncategorized'] || COLORS.uncategorized}`}>
-                      {transaction.category || 'uncategorized'}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+    <LedgerHistory
+      transactions={transactions}
+      loading={transactionsLoading}
+      onUpdated={(updated) =>
+        setTransactions((current) =>
+          current.map((row) => (row.transaction_id === updated.transaction_id ? { ...row, ...updated } : row)),
+        )
+      }
+    />
   );
 
   const employeesView = (
@@ -1889,6 +2083,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       accounts={employees.filter((employee) => employee.account_type === 'EMPLOYEE')}
       departments={departments}
       onUpdatePermissions={handleUpdateEmployeeScopes}
+      admins={employees.filter((employee) => employee.account_type !== 'EMPLOYEE')}
     />
   );
 
@@ -1907,7 +2102,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
               : activePath === '/history'
                 ? historyView
                 : activePath === '/audit-logs'
-                  ? historyView
+                  ? <AuditLogPanel />
                   : employeesView;
 
   const modalTransaction = selectedAnomaly ? transactionById.get(selectedAnomaly.transaction_id) || null : null;
@@ -2241,10 +2436,12 @@ const EmployeeAccessSection = ({
   accounts,
   departments,
   onUpdatePermissions,
+  admins = [],
 }: {
   accounts: UserAccount[];
   departments: Department[];
   onUpdatePermissions: (userId: string, permissionsByDepartment: Record<string, string[]>) => Promise<void>;
+  admins?: UserAccount[];
 }) => {
   const [expandedEmployeeId, setExpandedEmployeeId] = useState<string | null>(null);
   const [permissionDrafts, setPermissionDrafts] = useState<Record<string, Record<string, string[]>>>({});
@@ -2319,6 +2516,39 @@ const EmployeeAccessSection = ({
         title="Employee Access Map"
         description="Choose which company departments and workspace sections each employee can access."
       />
+
+      {/* The page listed people but never said anything about them. These four
+          numbers are the ones an administrator is actually checking for. */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <TeamMetric
+          label="Employees"
+          value={accounts.length}
+          note={`${admins.length} administrator${admins.length === 1 ? '' : 's'} besides`}
+          tip="Accounts that sign in to see a department. Administrators are counted separately because they already see everything in the company."
+        />
+        <TeamMetric
+          label="Disabled"
+          value={accounts.filter((employee) => !employee.is_active).length}
+          note="cannot sign in"
+          tone={accounts.some((employee) => !employee.is_active) ? 'warn' : 'plain'}
+          tip="A disabled account keeps its history and its verdicts but can no longer sign in."
+        />
+        <TeamMetric
+          label="Never signed in"
+          value={accounts.filter((employee) => !employee.last_login).length}
+          note="account created, never used"
+          tone={accounts.some((employee) => !employee.last_login) ? 'warn' : 'plain'}
+          tip="Usually means the generated password never reached the person. Worth chasing before the demo, not after."
+        />
+        <TeamMetric
+          label="Without access"
+          value={accounts.filter((employee) => employee.departments.length === 0).length}
+          note="granted no department"
+          tone={accounts.some((employee) => employee.departments.length === 0) ? 'warn' : 'plain'}
+          tip="They can sign in but will see an empty workspace until a department is granted below."
+        />
+      </div>
+
       <div className="space-y-5">
         {accounts.map((employee) => {
           const permissions = employeePermissions(employee);
@@ -2347,11 +2577,33 @@ const EmployeeAccessSection = ({
                 </div>
 
                 <div className="mt-6 flex flex-col gap-3 border-t border-slate-100 pt-5 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex items-center gap-2 text-slate-500">
-                    <Clock size={16} />
-                    <span className="text-[10px] font-black uppercase tracking-[0.18em]">
-                      {authorizedDepartmentIds.length} {authorizedDepartmentIds.length === 1 ? 'unit' : 'units'}
+                  <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-slate-500">
+                    <span className="inline-flex items-center gap-2">
+                      <Clock size={16} />
+                      <span className="text-[10px] font-black uppercase tracking-[0.18em]">
+                        {authorizedDepartmentIds.length} {authorizedDepartmentIds.length === 1 ? 'unit' : 'units'}
+                      </span>
                     </span>
+                    <Tip
+                      text={
+                        employee.last_login
+                          ? `Last signed in ${new Date(employee.last_login).toLocaleString()}. An account nobody uses is an account worth closing.`
+                          : 'This account has never been used. Either the password never reached the person, or they do not need it.'
+                      }
+                    >
+                      <span
+                        className={`cursor-help text-[10px] font-black uppercase tracking-[0.18em] ${
+                          employee.last_login ? 'text-slate-500' : 'text-amber-600'
+                        }`}
+                      >
+                        {employee.last_login ? `seen ${new Date(employee.last_login).toLocaleDateString()}` : 'never signed in'}
+                      </span>
+                    </Tip>
+                    <Tip text="What this person can do inside the departments they are granted. Open the row to change it.">
+                      <span className="cursor-help text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">
+                        {Object.values(permissions).reduce((total, list) => total + list.length, 0)} permissions
+                      </span>
+                    </Tip>
                   </div>
                   <button
                     type="button"
@@ -2512,6 +2764,31 @@ const expenseStatusClass = (status: string) => {
   if (status === 'rejected') return 'border border-red-100 bg-red-50 text-red-600';
   return 'border border-slate-200 bg-slate-50 text-slate-500';
 };
+
+const TeamMetric = ({
+  label,
+  value,
+  note,
+  tip,
+  tone = 'plain',
+}: {
+  label: string;
+  value: number;
+  note: string;
+  tip: string;
+  tone?: 'plain' | 'warn';
+}) => (
+  <div className={`${shellCard} p-6`}>
+    <p className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">
+      {label}
+      <InfoDot text={tip} />
+    </p>
+    <p className={`mt-3 text-4xl font-black tabular-nums tracking-[-0.04em] ${tone === 'warn' && value > 0 ? 'text-amber-600' : 'text-slate-950'}`}>
+      {value}
+    </p>
+    <p className="mt-1.5 text-xs text-slate-500">{note}</p>
+  </div>
+);
 
 const SectionKicker = ({ title, subtitle }: { title: string; subtitle: string }) => (
   <div>
@@ -2675,6 +2952,70 @@ const DataPill = ({ label, value, isLoading = false }: { label: string; value: s
   </div>
 );
 
+// A small, static explainer of the forecasting pipeline -- Forensic Intelligence
+// grounds every tab in a bespoke illustration; this is Budget's version of that,
+// built as icons rather than artwork since there's no image-generation tool here.
+const ForecastMethodDiagram = () => {
+  const steps: { icon: React.ElementType; label: string; note: string }[] = [
+    { icon: Database, label: 'Spend History', note: 'Cleaned & grouped by month' },
+    { icon: GitCompare, label: 'Model Selection', note: 'SARIMA vs. baseline, best on holdout' },
+    { icon: TrendingUp, label: 'Prediction + Range', note: 'Point forecast with confidence band' },
+  ];
+  return (
+    <div className="mt-4 flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+      {steps.map((step, index) => (
+        <React.Fragment key={step.label}>
+          <div className="flex min-w-0 flex-1 flex-col items-center gap-1.5 text-center">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-blue-600">
+              <step.icon size={17} />
+            </div>
+            <p className="text-[11px] font-black leading-tight text-slate-700">{step.label}</p>
+            <p className="text-[10px] leading-tight text-slate-400">{step.note}</p>
+          </div>
+          {index < steps.length - 1 && <ArrowRight size={14} className="flex-none text-slate-300" />}
+        </React.Fragment>
+      ))}
+    </div>
+  );
+};
+
+// A proportional bar for the pace pill's numbers, in the same spirit as Forensic's
+// diagrams: never show a bare status without a visual grounded in the real figures
+// behind it. Used-so-far and projected-remaining are drawn to scale against the
+// 100% budget line, so the pill's claim is visibly, not just textually, true.
+const BudgetPaceThermometer = ({ usedPct, pacePct, tone }: { usedPct: number; pacePct: number; tone: 'red' | 'amber' | 'green' }) => {
+  const scaleMax = Math.max(120, pacePct + 15, 100);
+  const clampPct = (value: number) => Math.min(100, Math.max(0, (value / scaleMax) * 100));
+  const usedWidth = clampPct(usedPct);
+  const pacedWidth = clampPct(pacePct);
+  const projectedWidth = Math.max(0, pacedWidth - usedWidth);
+  const toneFill = tone === 'red' ? '#DC2626' : tone === 'amber' ? '#D97706' : '#059669';
+
+  return (
+    <div className="mt-3">
+      <div className="relative h-3 w-full overflow-hidden rounded-full bg-slate-100">
+        <div className="absolute inset-y-0 left-0 rounded-full bg-blue-700" style={{ width: `${usedWidth}%` }} />
+        <div
+          className="absolute inset-y-0 rounded-full opacity-75"
+          style={{ left: `${usedWidth}%`, width: `${projectedWidth}%`, backgroundColor: toneFill }}
+        />
+        <div className="absolute inset-y-0 w-0 border-l-2 border-dashed border-slate-500" style={{ left: `${clampPct(100)}%` }} />
+      </div>
+      <div className="mt-1.5 flex items-center justify-between text-[10px] font-bold uppercase tracking-wide text-slate-400">
+        <span className="flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full bg-blue-700" />
+          Used {usedPct}%
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: toneFill }} />
+          Projected {pacePct}%
+        </span>
+        <span>Budget 100%</span>
+      </div>
+    </div>
+  );
+};
+
 const ReadinessCard = ({
   label,
   value,
@@ -2725,6 +3066,36 @@ const ForecastTooltip = ({ active, payload, label }: { active?: boolean; payload
     rows.push({ label: 'Likely range', value: `TK ${point.lower.toLocaleString()} – TK ${upper.toLocaleString()}` });
   }
   if (!rows.length) return null;
+
+  return (
+    <div className="rounded-2xl border border-blue-100 bg-white px-4 py-3 shadow-[0_12px_40px_rgba(59,130,246,0.14)]">
+      <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">{label}</p>
+      <div className="mt-2 space-y-1">
+        {rows.map((row) => (
+          <div key={row.label} className="flex items-center justify-between gap-6 text-sm">
+            <span className="font-semibold text-slate-500">{row.label}</span>
+            <span className="font-black text-slate-900">{row.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const AccuracyTooltip = ({ active, payload, label }: { active?: boolean; payload?: Array<{ payload: Record<string, unknown> }>; label?: string }) => {
+  if (!active || !payload || !payload.length) return null;
+  const point = payload[0]?.payload;
+  if (!point) return null;
+
+  const rows: { label: string; value: string }[] = [
+    { label: 'Predicted', value: `TK ${Number(point.predicted).toLocaleString()}` },
+  ];
+  if (point.actual !== null && point.actual !== undefined) {
+    rows.push({ label: 'Actual', value: `TK ${Number(point.actual).toLocaleString()}` });
+    rows.push({ label: 'Error', value: `${point.errorPct}%` });
+  } else {
+    rows.push({ label: 'Actual', value: 'No spend recorded' });
+  }
 
   return (
     <div className="rounded-2xl border border-blue-100 bg-white px-4 py-3 shadow-[0_12px_40px_rgba(59,130,246,0.14)]">

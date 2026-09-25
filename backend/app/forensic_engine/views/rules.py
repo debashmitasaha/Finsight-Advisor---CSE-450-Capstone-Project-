@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from app.forensic_engine.config import EngineConfig
@@ -148,53 +149,68 @@ def _split_purchases(frame: pd.DataFrame, thresholds: list[float], config: Engin
         return signals
 
     limit = min(thresholds) if thresholds else None
-    reported: set[frozenset] = set()
+    span = pd.Timedelta(days=config.split_window_days)
 
     for head, group in frame.groupby("entity_account_head"):
         if len(group) < config.split_min_parts:
             continue
         ordered = group.sort_values("transaction_date").reset_index(drop=True)
+        # Sorted dates mean each window is a contiguous slice, so its end is found by
+        # binary search rather than by testing every row in the head against every
+        # start. On a five-year ledger that is the difference between seconds and
+        # minutes, and it selects exactly the same rows.
+        dates = ordered["transaction_date"].to_numpy()
+        amounts = ordered["amount"].to_numpy(dtype=float)
+        ids = ordered["transaction_id"].to_numpy()
+
+        # Windows are contiguous and their ends never move backwards as the start
+        # advances, so a window is contained in an already-reported one exactly when it
+        # ends no later. That replaces comparing this window's rows against every set
+        # reported so far.
+        last_reported_end = -1
 
         # Every window is examined, not just the first that qualifies: a head can be
         # split-purchased more than once across a multi-year ledger, and stopping at the
         # earliest occurrence silently hides every later one.
         for start in range(len(ordered)):
-            window_end = ordered.at[start, "transaction_date"] + pd.Timedelta(days=config.split_window_days)
-            window = ordered[
-                (ordered["transaction_date"] >= ordered.at[start, "transaction_date"])
-                & (ordered["transaction_date"] <= window_end)
-            ]
-            if len(window) < config.split_min_parts:
+            # The window opens at the first row sharing this row's timestamp, not at
+            # this row. Ledgers are commonly dated to the day, so several payments carry
+            # the same timestamp and they all belong to the same window.
+            lo = int(np.searchsorted(dates, dates[start], side="left"))
+            end = int(np.searchsorted(dates, dates[start] + span, side="right"))
+            if end - lo < config.split_min_parts:
                 continue
 
-            total = float(window["amount"].sum())
-            largest = float(window["amount"].max())
+            part_amounts = amounts[lo:end]
+            total = float(part_amounts.sum())
+            largest = float(part_amounts.max())
             if limit is not None and not (largest < limit <= total):
                 # Only interesting when the parts stay under a limit the total would breach.
                 continue
             if limit is None and largest <= 0:
                 continue
 
-            key = frozenset(window["transaction_id"])
-            if key in reported or any(key <= seen for seen in reported):
+            if end <= last_reported_end:
                 continue
-            reported.add(key)
+            last_reported_end = end
 
-            spread = float(window["amount"].std() / window["amount"].mean()) if window["amount"].mean() else 1.0
+            parts = end - lo
+            mean = float(part_amounts.mean())
+            spread = float(part_amounts.std(ddof=1) / mean) if mean else 1.0
             # Genuine instalments vary; deliberate slicing produces suspiciously even parts.
             evenness = max(0.0, 1.0 - spread)
-            strength = min(0.9, 0.35 + 0.35 * evenness + 0.1 * (len(window) - config.split_min_parts))
-            for transaction_id in window["transaction_id"]:
+            strength = min(0.9, 0.35 + 0.35 * evenness + 0.1 * (parts - config.split_min_parts))
+            for transaction_id in ids[lo:end]:
                 signals.append(
                     Signal(
                         transaction_id,
                         VIEW,
                         "split_purchase",
                         strength,
-                        f"{len(window)} payments to '{head}' totalling {total:,.2f} within {config.split_window_days} day(s), each individually below limit",
+                        f"{parts} payments to '{head}' totalling {total:,.2f} within {config.split_window_days} day(s), each individually below limit",
                         {
                             "account_head": head,
-                            "parts": int(len(window)),
+                            "parts": int(parts),
                             "window_days": config.split_window_days,
                             "combined_amount": total,
                             "largest_part": largest,

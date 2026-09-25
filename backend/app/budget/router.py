@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # Bug 3 fix: use date.fromisoformat() instead of datetime.strptime() for cleaner parsing.
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
 from dateutil.relativedelta import relativedelta
@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.admin.router import get_budget_reference_date, get_department_budget_snapshot
 from app.auth.router import get_current_user
 from app.budget.forecasting import (
     build_monthly_series,
@@ -17,12 +18,19 @@ from app.budget.forecasting import (
     run_budget_forecast,
 )
 from app.database import get_db
-from app.models import BudgetForecast, Department, Transaction, UploadBatch, User
+from app.models import BudgetForecast, Department, Notification, Transaction, UploadBatch, User
 
 router = APIRouter(prefix="/budget", tags=["Budget"])
 
 
 ForecastSourceMode = Literal["latest_batch", "full_history", "upload_batch", "date_range"]
+
+# Scopes that represent an ongoing, department-wide prediction rather than a
+# one-off run against a specific uploaded file or date range. Accuracy
+# tracking and budget-pace alerts only ever consider runs made in these
+# scopes, so testing a forecast against an arbitrary old file never pollutes
+# either.
+ONGOING_FORECAST_SCOPES = ("latest_batch", "full_history")
 
 
 class ForecastRequest(BaseModel):
@@ -160,6 +168,7 @@ def _serialize_forecast_rows(forecasts: list[BudgetForecast]) -> list[dict]:
             "upper_bound": float(forecast.upper_bound or 0),
             "model_type": forecast.model_type,
             "model_version": forecast.model_version,
+            "source_mode": forecast.source_mode,
         }
         for forecast in forecasts
     ]
@@ -176,6 +185,63 @@ def _serialize_upload_batch(batch_row) -> dict:
         "first_transaction_date": batch_row.first_transaction_date.date().isoformat() if batch_row.first_transaction_date else None,
         "last_transaction_date": batch_row.last_transaction_date.date().isoformat() if batch_row.last_transaction_date else None,
     }
+
+
+def _maybe_create_budget_pace_alert(db: Session, department: Department, forecasts: list[BudgetForecast]) -> None:
+    """Warn when actual spend so far this year plus the forecasted remaining
+    months of the year is on pace to cross the department's annual budget.
+
+    Only called for ongoing-scope forecasts (see ONGOING_FORECAST_SCOPES) --
+    a one-off run against an arbitrary old file should never trigger this.
+    """
+    annual_budget = float(department.annual_budget or 0)
+    if annual_budget <= 0:
+        return
+
+    reference_date = get_budget_reference_date(db, department.department_id).date()
+    snapshot = get_department_budget_snapshot(db, department)
+    projected_remaining = sum(
+        float(forecast.predicted_amount)
+        for forecast in forecasts
+        if forecast.forecast_period_start.year == reference_date.year
+        and forecast.forecast_period_start > reference_date
+    )
+    projected_total = snapshot["used_budget_current_year"] + projected_remaining
+    pace_pct = projected_total / annual_budget * 100
+
+    if pace_pct >= 100:
+        severity = "over pace"
+    elif pace_pct >= 90:
+        severity = "approaching budget"
+    else:
+        return
+
+    # Avoid re-alerting on every re-run: skip if we already warned about this
+    # department's pace in the last day.
+    recent_cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    already_alerted = (
+        db.query(Notification)
+        .filter(
+            Notification.department_id == department.department_id,
+            Notification.type == "budget_pace",
+            Notification.created_at >= recent_cutoff,
+        )
+        .first()
+    )
+    if already_alerted:
+        return
+
+    db.add(
+        Notification(
+            department_id=department.department_id,
+            type="budget_pace",
+            message=(
+                f"{department.department_name} is {severity}: projected to spend "
+                f"TK {projected_total:,.0f} of its TK {annual_budget:,.0f} annual budget "
+                f"({pace_pct:.0f}%) by year end."
+            ),
+        )
+    )
 
 
 @router.post("/forecast")
@@ -204,12 +270,11 @@ def generate_forecast(payload: ForecastRequest, current_user: User = Depends(get
         result = run_budget_forecast(monthly, months_ahead)
         result = _append_scope_note(result, scope_note)
 
-    (
-        db.query(BudgetForecast)
-        .filter(BudgetForecast.department_id == payload.dept_id)
-        .delete(synchronize_session=False)
-    )
-
+    # Past runs are kept (not deleted) so accuracy tracking can later compare
+    # what was predicted for a month against what that month actually turned
+    # out to be. Each row is tagged with the scope it was computed from, so a
+    # one-off run against a specific uploaded file never gets confused with an
+    # ongoing department-wide prediction.
     forecasts = []
     for predicted in result.forecasts:
         period_start = date.fromisoformat(f"{predicted['month']}-01")
@@ -223,9 +288,14 @@ def generate_forecast(payload: ForecastRequest, current_user: User = Depends(get
             model_version=result.model_version,
             lower_bound=float(predicted["lower_bound"]),
             upper_bound=float(predicted["upper_bound"]),
+            source_mode=payload.source_mode,
+            upload_batch_id=payload.upload_batch_id if payload.source_mode == "upload_batch" else None,
         )
         db.add(forecast)
         forecasts.append(forecast)
+
+    if payload.source_mode in ONGOING_FORECAST_SCOPES:
+        _maybe_create_budget_pace_alert(db, department, forecasts)
 
     db.commit()
     for forecast in forecasts:
@@ -252,6 +322,71 @@ def get_forecasts(dept_id: str, current_user: User = Depends(get_current_user), 
         .all()
     )
     return _serialize_forecast_rows(forecasts)
+
+
+@router.get("/dept/{dept_id}/forecast-accuracy")
+def get_forecast_accuracy(dept_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Compare each historical month's forecast against what that month
+    actually turned out to be, using only ongoing-scope forecasts (see
+    ONGOING_FORECAST_SCOPES) so a one-off test run against an old file never
+    skews the accuracy read-out.
+    """
+    today = date.today()
+    rows = (
+        db.query(BudgetForecast)
+        .filter(
+            BudgetForecast.department_id == dept_id,
+            BudgetForecast.source_mode.in_(ONGOING_FORECAST_SCOPES),
+            BudgetForecast.forecast_period_end < today,
+        )
+        .order_by(BudgetForecast.forecast_period_start.asc(), BudgetForecast.created_at.asc())
+        .all()
+    )
+
+    # A month can have been forecasted more than once before it arrived (the
+    # department re-ran "Forecast Budget" between runs). The earliest one is
+    # the purest test of forecast usefulness, since it was made without
+    # benefit of any of the data that came in closer to that month.
+    earliest_by_period: dict[date, BudgetForecast] = {}
+    for row in rows:
+        earliest_by_period.setdefault(row.forecast_period_start, row)
+
+    entries = []
+    errors = []
+    for period_start in sorted(earliest_by_period):
+        forecast = earliest_by_period[period_start]
+        period_end = forecast.forecast_period_end
+        actual = float(
+            db.query(func.coalesce(func.sum(Transaction.amount), 0))
+            .filter(
+                Transaction.department_id == dept_id,
+                Transaction.transaction_date >= datetime.combine(period_start, datetime.min.time()),
+                Transaction.transaction_date < datetime.combine(period_end + relativedelta(days=1), datetime.min.time()),
+                func.lower(func.coalesce(Transaction.transaction_type, "debit")) == "debit",
+            )
+            .scalar()
+            or 0
+        )
+        predicted = float(forecast.predicted_amount)
+        error_pct = round(abs(actual - predicted) / actual * 100, 2) if actual > 0 else None
+        if error_pct is not None:
+            errors.append(error_pct)
+        entries.append(
+            {
+                "month": period_start.strftime("%Y-%m"),
+                "predicted_amount": predicted,
+                "actual_amount": round(actual, 2),
+                "error_pct": error_pct,
+                "model_type": forecast.model_type,
+                "source_mode": forecast.source_mode,
+            }
+        )
+
+    return {
+        "entries": entries,
+        "average_error_pct": round(sum(errors) / len(errors), 2) if errors else None,
+        "months_evaluated": len(errors),
+    }
 
 
 @router.get("/dept/{dept_id}/upload-batches", response_model=list[UploadBatchSummary])

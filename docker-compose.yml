@@ -1,0 +1,50 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    # Optional on purpose: a fresh clone has no backend/.env, and requiring one made
+    # `docker compose up` fail before it started anything. Copy backend/.env.example
+    # to backend/.env when you need a Gemini key or a real database URL; without it
+    # the app runs on its built-in defaults.
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      # Everything the app needs to come up on a machine that has nothing set.
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/finsight.db}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}
+      AUTO_SEED_DEMO: ${AUTO_SEED_DEMO:-True}
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend_data:/app/data
+      - model_cache:/app/model-cache
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+        GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  backend_data:
+  model_cache:

@@ -11,9 +11,18 @@ import {
 } from 'lucide-react';
 import Layout from '../components/Layout';
 import LoadingState from '../components/LoadingState';
+import { InfoDot, Tip } from '../components/ForensicKit';
 import { api } from '../lib/api';
 import { Anomaly, Department, Forecast, ForecastDiagnostics, Transaction, UserAccount } from '../types';
 import { COLORS } from '../constants';
+
+/** Plain words for the permission keys stored against each department role. */
+const PERMISSION_MEANING: Record<string, string> = {
+  view_transactions: 'You can open this department’s ledger and read every imported row.',
+  run_analysis: 'You can start the forecasting and forensic runs, not just read their results.',
+  view_forecasts: 'You can see the budget forecast and the accuracy reported with it.',
+  manage_department: 'You can upload ledgers and change this department’s settings.',
+};
 
 interface UserDashboardProps {
   user: UserAccount;
@@ -177,6 +186,46 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
           <MiniMetric label="Q2 Estimated Carryover" value={`TK ${carryover.toLocaleString()}`} />
           <MiniMetric label="Variance Risk" value={varianceRisk} />
           <MiniMetric label="Audit Compliance" value={auditCompliance} />
+        </div>
+      </div>
+
+      {/* An employee could never see what they had been granted, only bump into
+          the edges of it. This says it plainly. */}
+      <div className={`${shellCard} p-8`}>
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">Your access</p>
+            <h3 className="mt-2 flex items-center gap-2 text-2xl font-black tracking-[-0.03em] text-slate-950">
+              What you can see
+              <InfoDot text="Granted by a company administrator. If a department you expect is missing, ask them to add it on the Employees page." />
+            </h3>
+          </div>
+          <p className="text-sm text-slate-500">
+            {departments.length} {departments.length === 1 ? 'department' : 'departments'}
+          </p>
+        </div>
+
+        <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {user.departments.length === 0 && (
+            <p className="text-sm text-slate-500">
+              No department has been granted to you yet, so this workspace will stay empty until an administrator adds one.
+            </p>
+          )}
+          {user.departments.map((role) => (
+            <div key={role.department_id} className="rounded-3xl border border-slate-200 p-5">
+              <p className="text-sm font-black text-slate-900">{role.department_name || 'Department'}</p>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {role.permissions.length === 0 && <span className="text-xs text-slate-400">view only</span>}
+                {role.permissions.map((permission) => (
+                  <Tip key={permission} text={PERMISSION_MEANING[permission] || 'A workspace section you have been granted.'}>
+                    <span className="cursor-help rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-slate-600">
+                      {permission.replace(/_/g, ' ')}
+                    </span>
+                  </Tip>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>

@@ -44,6 +44,7 @@ export interface Department {
   transaction_count?: number;
   used_budget_current_year?: number;
   annual_budget_utilization_pct?: number;
+  budget_reference_date?: string;
 }
 
 export interface Transaction {
@@ -116,6 +117,7 @@ export interface Forecast {
   upper_bound: number;
   model_type: string | null;
   model_version: string | null;
+  source_mode?: string | null;
 }
 
 export type ForecastSourceMode = 'latest_batch' | 'full_history' | 'upload_batch' | 'date_range';
@@ -150,6 +152,21 @@ export interface ForecastContextResponse {
   forecasts: Forecast[];
 }
 
+export interface ForecastAccuracyEntry {
+  month: string;
+  predicted_amount: number;
+  actual_amount: number;
+  error_pct: number | null;
+  model_type: string | null;
+  source_mode: string | null;
+}
+
+export interface ForecastAccuracyResponse {
+  entries: ForecastAccuracyEntry[];
+  average_error_pct: number | null;
+  months_evaluated: number;
+}
+
 export interface UploadBatchSummary {
   upload_batch_id: string;
   source_file_name: string;
@@ -159,6 +176,15 @@ export interface UploadBatchSummary {
   transaction_count: number;
   first_transaction_date: string | null;
   last_transaction_date: string | null;
+}
+
+export interface UploadTransactionsResponse {
+  success: boolean;
+  upload_batch_id: string;
+  rows_processed: number;
+  rows_failed: number;
+  duplicate_rows: number;
+  failed_rows: { row: number; error: string }[];
 }
 
 export interface ExpenseCategory {
@@ -210,6 +236,12 @@ export interface ForensicRunResponse {
   zscore_anomalies?: number;
   rsf_anomalies?: number;
   total_anomalies: number;
+  upload_batch_id?: string | null;
+  source_file_name?: string | null;
+  grouping?: {
+    groups_assigned: number;
+    new_groups_created: number;
+  };
 }
 
 export interface Anomaly {
@@ -292,10 +324,12 @@ export interface EngineDiagnostics {
 
 export interface EngineAnalyzeResponse {
   success: boolean;
-  run_id: string | null;
+  run_id?: string | null;
   summary: EngineSummary;
-  diagnostics: EngineDiagnostics;
-  reported: number;
+  /** Absent when the department holds no transactions: the engine returns a message
+   *  instead of a run, so every reader has to check before reaching inside. */
+  diagnostics?: EngineDiagnostics;
+  reported?: number;
   scored_total?: number;
   min_report_score: number;
   threshold?: ThresholdInfo;
@@ -603,4 +637,197 @@ export interface ReviewResponse {
   calibration_triggered: boolean;
   calibration: CalibrationRecord | null;
   status: CalibrationStatus;
+}
+
+/* ------------------------------------------------------------------ audit */
+
+export interface AuditLogEntry {
+  log_id: string;
+  action: string;
+  at: string | null;
+  actor_name: string | null;
+  actor_email: string | null;
+  actor_is_admin: boolean | null;
+  department_name: string | null;
+  transaction_id: string | null;
+}
+
+export interface AuditLogResponse {
+  entries: AuditLogEntry[];
+  window_days: number;
+  total: number;
+  distinct_actors: number;
+  by_action: Record<string, number>;
+}
+
+/** The roster behind a department's semantic groups, with the text that defines each. */
+export interface GroupRosterRow {
+  dept_id: string;
+  chart_acc_head_name: string | null;
+  group_no: number | null;
+  group_name: string | null;
+  representative_text: string | null;
+}
+
+/* ------------------------------------------- historical full-population scan */
+
+export type CaseBand = 'critical' | 'high' | 'medium' | 'low';
+export type CaseReviewStatus = 'pending' | 'confirmed' | 'cleared' | 'uncertain';
+
+export interface CaseEvidence {
+  code: string;
+  layer: 'aggregate' | 'changepoint' | 'collective' | 'transaction';
+  entity_type: string;
+  entity_id: string;
+  period_start: string;
+  period_end: string;
+  strength: number;
+  message: string;
+  detail: Record<string, unknown>;
+  member_count: number;
+  amount: number;
+}
+
+export interface CaseExplanation {
+  what_changed: string;
+  compared_with: string | null;
+  when_it_started: string;
+  when_it_ended: string;
+  who_it_affects: { entity_type: string; entity_id: string };
+  how_many_transactions: number;
+  how_much: number;
+  which_layers_agree: string[];
+  evidence: CaseEvidence[];
+  strongest_examples: Array<{
+    transaction_id: string;
+    date: string;
+    amount: number;
+    description: string;
+    account_head: string;
+    voucher: string;
+  }>;
+  caveat: string;
+}
+
+export interface AnomalyCaseSummary {
+  case_id: string;
+  scan_id: string;
+  title: string;
+  entity_type: string;
+  entity_id: string;
+  start_date: string;
+  end_date: string;
+  priority_score: number;
+  band: CaseBand;
+  total_amount: number;
+  member_count: number;
+  layer_count: number;
+  codes: string[];
+  scores: Record<string, number | Record<string, number>>;
+  review_status: CaseReviewStatus;
+  review_note: string | null;
+  reviewed_at: string | null;
+}
+
+export interface AnomalyCaseDetail extends AnomalyCaseSummary {
+  explanation: CaseExplanation;
+  evidence: CaseEvidence[];
+  members: Array<{
+    transaction_id: string;
+    transaction_date: string | null;
+    amount: number;
+    description: string | null;
+    chart_acc_head: string | null;
+    invoice_id: string | null;
+    group_name: string | null;
+    is_flagged: boolean;
+  }>;
+  members_truncated: boolean;
+}
+
+export interface HistoricalScan {
+  scan_id: string;
+  company_id: string;
+  status: string;
+  engine_version: string;
+  start_date: string | null;
+  end_date: string | null;
+  row_count: number;
+  case_count: number;
+  config: Record<string, unknown>;
+  diagnostics: {
+    status?: string;
+    reason?: string;
+    total_seconds?: number;
+    cases_built?: number;
+    cases_by_band?: Record<string, number>;
+    evidence_total?: number;
+    evidence_by_detector?: Record<string, number>;
+    row_level_views?: { status: string; reason?: string; alerts?: number };
+    approval_limits_inferred?: number[];
+    company_monthly_median?: number;
+    data_quality_confidence?: number;
+    timings_seconds?: Record<string, number>;
+    entity_periods?: Record<string, number>;
+    data_quality?: {
+      rows_in_ledger?: number;
+      rows_scanned?: number;
+      credit_rows_excluded?: number;
+      months_covered?: number;
+      distinct_account_heads?: number;
+      voucher_coverage?: number;
+      expense_category_coverage?: number;
+      date_from?: string | null;
+      date_to?: string | null;
+      warnings?: string[];
+    };
+  };
+  created_at: string | null;
+  cases?: AnomalyCaseSummary[] | null;
+}
+
+/** A short, readable ground for a case's priority: "4.9x normal", "3 layers agree". */
+export interface CaseReason {
+  kind: 'anomaly' | 'corroboration' | 'materiality' | 'persistence' | 'novelty' | 'rows';
+  label: string;
+  detail: string;
+}
+
+/** The four row-level views' verdict on the transactions inside one case. */
+export interface CaseDetailedAnalysis {
+  case_id: string;
+  status: 'ok' | 'empty';
+  reason?: string;
+  rows_examined?: number;
+  seconds?: number;
+  alert_line?: number;
+  rows_above_alert_line?: number;
+  views_that_fired?: Record<string, number>;
+  caveat?: string;
+  findings: Array<{
+    transaction_id: string;
+    risk_score: number;
+    band: string;
+    views_triggered: string[];
+    view_scores: Record<string, number>;
+    corroboration: number;
+    signals: Array<{ view: string; code: string; strength: number; message: string }>;
+  }>;
+}
+
+/** Where the case priority line sits, and what the reviewers' verdicts moved it to. */
+export interface CaseCalibration {
+  threshold: number;
+  status: 'bootstrap' | 'one_sided' | 'no_gain' | 'calibrated';
+  reason: string;
+  reviewed_cases: number;
+  confirmed: number;
+  cleared: number;
+  precision: number;
+  recall: number;
+  f1: number;
+  default_f1: number;
+  default_threshold: number;
+  cases_total: number;
+  awaiting_review: number;
 }

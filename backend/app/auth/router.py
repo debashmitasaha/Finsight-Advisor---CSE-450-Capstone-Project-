@@ -147,6 +147,13 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
+    # Recorded here rather than in the audit middleware: the request that signs a
+    # person in is the one request that arrives without a token, so the middleware
+    # cannot tell who made it.
+    from app.audit import record
+
+    record(db, user.user_id, "Signed in")
+
     return TokenResponse(
         access_token=create_access_token(user.user_id),
         refresh_token=create_refresh_token(user.user_id),

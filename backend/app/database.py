@@ -179,6 +179,8 @@ def sync_postgres_schema() -> None:
         text('ALTER TABLE IF EXISTS budget_forecast ADD COLUMN IF NOT EXISTS lower_bound NUMERIC(15, 2)'),
         text('ALTER TABLE IF EXISTS budget_forecast ADD COLUMN IF NOT EXISTS upper_bound NUMERIC(15, 2)'),
         text('ALTER TABLE IF EXISTS budget_forecast ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()'),
+        text('ALTER TABLE IF EXISTS budget_forecast ADD COLUMN IF NOT EXISTS source_mode TEXT'),
+        text('ALTER TABLE IF EXISTS budget_forecast ADD COLUMN IF NOT EXISTS upload_batch_id UUID'),
         text('ALTER TABLE IF EXISTS anomaly ADD COLUMN IF NOT EXISTS evidence_snapshot JSONB'),
         text('ALTER TABLE IF EXISTS anomaly ADD COLUMN IF NOT EXISTS is_resolved BOOLEAN NOT NULL DEFAULT FALSE'),
         text('ALTER TABLE IF EXISTS anomaly ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()'),
@@ -234,6 +236,10 @@ def sync_sqlite_schema() -> None:
         },
         "company_forensic_config": {
             "calibration_overrides": "JSON",
+        },
+        "budget_forecast": {
+            "source_mode": "TEXT",
+            "upload_batch_id": "CHAR(36)",
         },
     }
 
