@@ -32,6 +32,8 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  Legend,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -787,7 +789,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       actual: Math.round(point.amount),
       forecast: null as number | null,
       lower: null as number | null,
-      upper: null as number | null,
+      band: null as number | null,
+      isBoundary: false,
     }));
 
     const future = chronologicalForecasts.map((forecast) => ({
@@ -795,11 +798,43 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       actual: null as number | null,
       forecast: Math.round(forecast.predicted_amount),
       lower: Math.round(forecast.lower_bound),
-      upper: Math.round(forecast.upper_bound),
+      band: Math.round(forecast.upper_bound) - Math.round(forecast.lower_bound),
+      isBoundary: false,
     }));
+
+    // Stitch the two lines together at the join so "actual" doesn't visibly
+    // stop dead with a gap before "forecast" begins on the next point.
+    if (historical.length && future.length) {
+      const lastHistorical = historical[historical.length - 1];
+      lastHistorical.forecast = lastHistorical.actual;
+      lastHistorical.lower = lastHistorical.actual;
+      lastHistorical.band = 0;
+      lastHistorical.isBoundary = true;
+    }
 
     return [...historical, ...future];
   }, [forecastHistory, forecasts, spendTrend]);
+
+  const forecastBoundaryMonth = useMemo(
+    () => forecastChartData.find((point) => point.isBoundary)?.month ?? null,
+    [forecastChartData],
+  );
+
+  const nextForecast = useMemo(
+    () => [...forecasts].sort((left, right) => left.forecast_period_start.localeCompare(right.forecast_period_start))[0] ?? null,
+    [forecasts],
+  );
+
+  const forecastSummaryLine = useMemo(() => {
+    if (!nextForecast) return null;
+    const amount = `TK ${Math.round(nextForecast.predicted_amount).toLocaleString()}`;
+    const range = `TK ${Math.round(nextForecast.lower_bound).toLocaleString()}–${Math.round(nextForecast.upper_bound).toLocaleString()}`;
+    const modelLabel = forecastModel?.model_type ? forecastModel.model_type.replace(/_/g, ' ') : 'the current';
+    const coverage = forecastDiagnostics?.train_months
+      ? `, trained on ${forecastDiagnostics.train_months} month${forecastDiagnostics.train_months === 1 ? '' : 's'} of history`
+      : '';
+    return `${selectedDepartment?.department_name || 'This department'} is projected to spend ${amount} in ${formatMonthLabel(nextForecast.forecast_period_start)} (likely range ${range}), using the ${modelLabel} model${coverage}.`;
+  }, [nextForecast, forecastModel, forecastDiagnostics, selectedDepartment]);
 
   const departmentBudgetData = useMemo(() => {
     return departments.map((department) => ({
@@ -1768,6 +1803,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       <div className="grid grid-cols-1 xl:grid-cols-[1.35fr,0.65fr] gap-6">
         <div className={`${shellCard} p-7`}>
           <SectionKicker title="Budget Forecast Curve" subtitle="Historical monthly spend extended into the prediction window." />
+          {!forecastLoading && forecastSummaryLine && (
+            <p className="mt-4 rounded-2xl border border-blue-100 bg-blue-50/70 px-4 py-3 text-sm font-semibold leading-6 text-blue-900">
+              {forecastSummaryLine}
+            </p>
+          )}
           <div className="h-[380px] mt-6">
             {isDepartmentSwitching ? (
               <ChartLoadingState label="Loading forecast curve" />
@@ -1776,17 +1816,44 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
                 <AreaChart data={forecastChartData}>
                   <defs>
                     <linearGradient id="forecastBand" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#60A5FA" stopOpacity={0.25} />
-                      <stop offset="100%" stopColor="#60A5FA" stopOpacity={0.02} />
+                      <stop offset="0%" stopColor="#60A5FA" stopOpacity={0.35} />
+                      <stop offset="100%" stopColor="#60A5FA" stopOpacity={0.08} />
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="4 6" stroke="#dbeafe" vertical={false} />
                   <XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fill: '#94A3B8', fontSize: 12, fontWeight: 700 }} />
-                  <YAxis tickLine={false} axisLine={false} tick={{ fill: '#94A3B8', fontSize: 12 }} />
-                  <Tooltip contentStyle={{ borderRadius: 20, borderColor: '#dbeafe', boxShadow: '0 12px 40px rgba(59,130,246,0.14)' }} />
-                  <Area type="monotone" dataKey="upper" stroke="transparent" fill="url(#forecastBand)" />
-                  <Area type="monotone" dataKey="actual" stroke="#1D4ED8" strokeWidth={4} fillOpacity={0} />
-                  <Area type="monotone" dataKey="forecast" stroke="#60A5FA" strokeWidth={4} fillOpacity={0} />
+                  <YAxis
+                    tickLine={false}
+                    axisLine={false}
+                    width={60}
+                    tick={{ fill: '#94A3B8', fontSize: 12 }}
+                    tickFormatter={(value) => `TK ${Math.round(Number(value) / 1000)}k`}
+                  />
+                  <Tooltip content={<ForecastTooltip />} />
+                  <Legend
+                    verticalAlign="top"
+                    align="right"
+                    height={32}
+                    iconType="plainline"
+                    payload={[
+                      { value: 'Actual spend', type: 'plainline', color: '#1D4ED8' },
+                      { value: 'Forecast', type: 'plainline', color: '#60A5FA' },
+                      { value: 'Likely range', type: 'square', color: '#BFDBFE' },
+                    ]}
+                    wrapperStyle={{ fontSize: 12, fontWeight: 700, color: '#64748B' }}
+                  />
+                  {forecastBoundaryMonth && (
+                    <ReferenceLine
+                      x={forecastBoundaryMonth}
+                      stroke="#CBD5E1"
+                      strokeDasharray="4 4"
+                      label={{ value: 'Today', position: 'insideTopLeft', fill: '#94A3B8', fontSize: 11, fontWeight: 700 }}
+                    />
+                  )}
+                  <Area type="monotone" dataKey="lower" stackId="range" stroke="transparent" fill="transparent" legendType="none" />
+                  <Area type="monotone" dataKey="band" stackId="range" stroke="transparent" fill="url(#forecastBand)" legendType="none" />
+                  <Area type="monotone" dataKey="actual" stroke="#1D4ED8" strokeWidth={3} fillOpacity={0} legendType="none" />
+                  <Area type="monotone" dataKey="forecast" stroke="#60A5FA" strokeWidth={3} strokeDasharray="6 4" fillOpacity={0} legendType="none" />
                 </AreaChart>
               </ResponsiveContainer>
             )}
@@ -1798,14 +1865,24 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
             <SectionKicker title="Forecast Summary" subtitle="Current forecast health and coverage." />
             <div className="mt-5 space-y-4">
               <DataPill label="Forecast Status" value={forecasts.length ? 'Ready' : 'Pending'} isLoading={forecastLoading} />
-              <DataPill label="Source" value={sourceModeLabel} isLoading={forecastLoading} />
-              <DataPill label="Confidence" value={forecastDiagnostics?.mape !== null && forecastDiagnostics?.mape !== undefined ? `${Math.max(0, Math.round(100 - forecastDiagnostics.mape))}%` : 'N/A'} isLoading={forecastLoading} />
-              <DataPill label="MAPE" value={forecastDiagnostics?.mape !== null && forecastDiagnostics?.mape !== undefined ? `${forecastDiagnostics.mape}%` : 'N/A'} isLoading={forecastLoading} />
-              <DataPill label="Coverage" value={`${forecastDiagnostics?.train_months || 0} months`} isLoading={forecastLoading} />
+              <DataPill label="Latest Model" value={forecastModel?.model_type ? forecastModel.model_type.replace(/_/g, ' ') : 'N/A'} isLoading={forecastLoading} />
+              <DataPill label="Forecast Entries" value={forecasts.length} isLoading={forecastLoading} />
+              {forecastDiagnostics?.mape !== null && forecastDiagnostics?.mape !== undefined && (
+                <>
+                  <DataPill label="Confidence" value={`${Math.max(0, Math.round(100 - forecastDiagnostics.mape))}%`} isLoading={forecastLoading} />
+                  <DataPill label="MAPE" value={`${forecastDiagnostics.mape}%`} isLoading={forecastLoading} />
+                  <DataPill label="Trained on" value={`${forecastDiagnostics?.train_months || 0} months`} isLoading={forecastLoading} />
+                </>
+              )}
             </div>
-            {forecastDiagnostics?.notes && (
+            {!forecastLoading && (forecastDiagnostics?.mape === null || forecastDiagnostics?.mape === undefined) && forecasts.length > 0 && (
+              <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-600">
+                Accuracy details (confidence, MAPE, training coverage) are only available right after a forecast run. Re-run <span className="font-black">Forecast Budget</span> from Dept Control to see them here.
+              </div>
+            )}
+            {!forecastLoading && forecastDiagnostics?.notes && (
               <div className="mt-5 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-800">
-                Forecast data is available and ready to review.
+                {forecastDiagnostics.notes}
               </div>
             )}
           </div>
@@ -2755,6 +2832,39 @@ const ReadinessCard = ({
 const SkeletonLine = ({ className = '' }: { className?: string }) => (
   <span className={`block animate-pulse rounded-full bg-slate-200 ${className}`} />
 );
+
+const ForecastTooltip = ({ active, payload, label }: { active?: boolean; payload?: Array<{ payload: Record<string, unknown> }>; label?: string }) => {
+  if (!active || !payload || !payload.length) return null;
+  const point = payload[0]?.payload;
+  if (!point) return null;
+
+  const rows: { label: string; value: string }[] = [];
+  if (point.actual !== null && point.actual !== undefined) {
+    rows.push({ label: 'Actual', value: `TK ${Number(point.actual).toLocaleString()}` });
+  }
+  if (!point.isBoundary && point.forecast !== null && point.forecast !== undefined) {
+    rows.push({ label: 'Forecast', value: `TK ${Number(point.forecast).toLocaleString()}` });
+  }
+  if (typeof point.band === 'number' && point.band > 0 && typeof point.lower === 'number') {
+    const upper = point.lower + point.band;
+    rows.push({ label: 'Likely range', value: `TK ${point.lower.toLocaleString()} – TK ${upper.toLocaleString()}` });
+  }
+  if (!rows.length) return null;
+
+  return (
+    <div className="rounded-2xl border border-blue-100 bg-white px-4 py-3 shadow-[0_12px_40px_rgba(59,130,246,0.14)]">
+      <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">{label}</p>
+      <div className="mt-2 space-y-1">
+        {rows.map((row) => (
+          <div key={row.label} className="flex items-center justify-between gap-6 text-sm">
+            <span className="font-semibold text-slate-500">{row.label}</span>
+            <span className="font-black text-slate-900">{row.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 const ChartLoadingState = ({ label }: { label: string }) => (
   <div className="flex h-full w-full items-center justify-center rounded-[26px] border border-dashed border-blue-100 bg-blue-50/40">

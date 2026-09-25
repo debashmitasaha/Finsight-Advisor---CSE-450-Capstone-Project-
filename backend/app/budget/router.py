@@ -178,31 +178,6 @@ def _serialize_upload_batch(batch_row) -> dict:
     }
 
 
-def _month_bucket(db: Session):
-    if db.bind and db.bind.dialect.name == "sqlite":
-        return func.strftime("%Y-%m", Transaction.transaction_date)
-    return func.to_char(Transaction.transaction_date, "YYYY-MM")
-
-
-def _department_spend_history(db: Session, dept_id: str, limit: int = 6) -> list[dict]:
-    month_expr = _month_bucket(db)
-    rows = (
-        db.query(
-            month_expr.label("month"),
-            func.coalesce(func.sum(Transaction.amount), 0).label("amount"),
-        )
-        .filter(Transaction.department_id == dept_id)
-        .group_by(month_expr)
-        .order_by(month_expr.desc())
-        .limit(limit)
-        .all()
-    )
-    return [
-        {"month": row.month, "amount": float(row.amount or 0)}
-        for row in reversed(rows)
-    ]
-
-
 @router.post("/forecast")
 def generate_forecast(payload: ForecastRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     department = db.query(Department).filter(Department.department_id == payload.dept_id).first()
@@ -322,22 +297,70 @@ def get_forecast_context(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    forecast_rows = (
-        db.query(BudgetForecast)
-        .filter(BudgetForecast.department_id == dept_id)
-        .order_by(BudgetForecast.forecast_period_start.asc())
-        .all()
+    months_ahead = max(1, months_ahead)
+    transactions, scope_note = _resolve_forecast_source(
+        db,
+        dept_id,
+        source_mode,
+        upload_batch_id,
+        date_from,
+        date_to,
     )
 
-    history = _department_spend_history(db, dept_id)
-    latest_forecast = forecast_rows[-1] if forecast_rows else None
+    monthly = build_monthly_series(transactions)
+    if monthly.empty:
+        # Nothing to forecast live from this source (e.g. an empty date range,
+        # or a brand-new department). Fall back to whatever was last actually
+        # persisted, rather than showing nothing.
+        forecast_rows = (
+            db.query(BudgetForecast)
+            .filter(BudgetForecast.department_id == dept_id)
+            .order_by(BudgetForecast.forecast_period_start.asc())
+            .all()
+        )
+        latest_forecast = forecast_rows[-1] if forecast_rows else None
+        return {
+            "history": [],
+            "diagnostics": None,
+            "model": {
+                "model_type": latest_forecast.model_type,
+                "model_version": latest_forecast.model_version,
+            } if latest_forecast else None,
+            "forecasts": _serialize_forecast_rows(forecast_rows),
+        }
+
+    result = run_budget_forecast(monthly, months_ahead)
+    result = _append_scope_note(result, scope_note)
+
+    # Build the returned forecast rows from this same live computation rather
+    # than from whatever is sitting in BudgetForecast. That table is only
+    # updated when someone actually runs "Forecast Budget" (POST /forecast),
+    # so if new transactions have landed since then, a persisted forecast can
+    # cover a month that history now also has real data for -- the last
+    # historical month and the first forecast month must always come from one
+    # coherent run, or they can overlap and silently disagree with each other.
+    live_forecasts = [
+        {
+            "forecast_id": f"preview:{dept_id}:{forecast['month']}",
+            "forecast_period_start": f"{forecast['month']}-01",
+            "forecast_period_end": (
+                date.fromisoformat(f"{forecast['month']}-01") + relativedelta(months=1, days=-1)
+            ).isoformat(),
+            "predicted_amount": float(forecast["predicted_amount"]),
+            "lower_bound": float(forecast["lower_bound"]),
+            "upper_bound": float(forecast["upper_bound"]),
+            "model_type": result.model_type,
+            "model_version": result.model_version,
+        }
+        for forecast in result.forecasts
+    ]
 
     return {
-        "history": history,
-        "diagnostics": None,
+        "history": result.history,
+        "diagnostics": result.diagnostics,
         "model": {
-            "model_type": latest_forecast.model_type,
-            "model_version": latest_forecast.model_version,
-        } if latest_forecast else None,
-        "forecasts": _serialize_forecast_rows(forecast_rows),
+            "model_type": result.model_type,
+            "model_version": result.model_version,
+        },
+        "forecasts": live_forecasts,
     }
