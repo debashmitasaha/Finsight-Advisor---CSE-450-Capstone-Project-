@@ -128,6 +128,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [departmentLoading, setDepartmentLoading] = useState(false);
   const [transactionsLoading, setTransactionsLoading] = useState(false);
   const [controlDataLoading, setControlDataLoading] = useState(false);
+  // Only an action already running blocks another one. Gating on a background
+  // statistics refresh meant a stalled refresh disabled the whole workflow.
+  const [actionRunning, setActionRunning] = useState(false);
   const [forecastLoading, setForecastLoading] = useState(false);
   const departmentRequestRef = useRef(0);
   const forecastRequestRef = useRef(0);
@@ -633,6 +636,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       },
     };
     const shouldBlock = action === 'group' || action === 'expense';
+    setActionRunning(true);
     if (shouldBlock) setBlockingAction(blockingCopy[action]);
     setStatus(`Running ${action}...`);
     try {
@@ -674,6 +678,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     } catch (error) {
       setStatus(error instanceof Error ? error.message : `Unable to run ${action}.`);
     } finally {
+      setActionRunning(false);
       if (shouldBlock) setBlockingAction(null);
     }
   };
@@ -1382,7 +1387,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
               detail={hasTransactions ? `${transactionCount.toLocaleString()} transactions available` : 'Upload transactions first'}
               status={hasGroups ? 'Done' : hasTransactions ? 'Ready' : 'Needs upload'}
               icon={BarChart3}
-              disabled={!hasTransactions || controlDataLoading}
+              disabled={!hasTransactions || actionRunning}
               onClick={() => triggerAction('group')}
             />
             <WorkflowStep
@@ -1391,7 +1396,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
               detail={hasGroups ? `${Number(groupingStats?.total_groups || 0).toLocaleString()} groups ready` : 'Run grouping first'}
               status={pendingExpenseReviews ? `${pendingExpenseReviews} pending` : hasGroups ? 'Ready' : 'Waiting'}
               icon={Sparkles}
-              disabled={!hasGroups || controlDataLoading}
+              disabled={!hasGroups || actionRunning}
               onClick={() => triggerAction('expense')}
             />
             <WorkflowStep
@@ -1400,7 +1405,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
               detail={categorizationCoverage ? `${categorizationCoverage}% categorized` : 'Transactions are uncategorized'}
               status={categorizationCoverage >= 80 ? 'Done' : hasTransactions ? 'Ready' : 'Needs upload'}
               icon={CheckCircle2}
-              disabled={!hasTransactions || controlDataLoading}
+              disabled={!hasTransactions || actionRunning}
               onClick={() => triggerAction('categorize')}
             />
           </div>
