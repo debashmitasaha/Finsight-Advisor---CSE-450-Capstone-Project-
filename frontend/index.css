@@ -1,0 +1,410 @@
+/* ============================================================================
+   FinSight Advisor — design layer for the Forensic Intelligence workspace.
+   Everything here is CSS only: no image files, no external requests, so the
+   page looks identical offline and on the demo machine.
+   ========================================================================== */
+
+:root {
+  --fs-ink: #09090b;
+  --fs-ink-2: #3f3f46;
+  --fs-ink-3: #71717a;
+  --fs-ink-4: #a1a1aa;
+  --fs-line: rgba(9, 9, 11, 0.08);
+  --fs-line-strong: rgba(9, 9, 11, 0.14);
+  --fs-accent: #5b5bd6;
+  --fs-accent-soft: #eeeefc;
+  --fs-surface: #ffffff;
+  --fs-surface-2: #fafafa;
+  --fs-radius: 18px;
+  --fs-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 12px 32px -14px rgba(16, 24, 40, 0.18);
+  --fs-shadow-lift: 0 1px 2px rgba(16, 24, 40, 0.05), 0 22px 48px -18px rgba(16, 24, 40, 0.28);
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  scroll-behavior: smooth;
+}
+
+body {
+  font-feature-settings: 'cv11' 1, 'ss01' 1;
+  letter-spacing: -0.011em;
+}
+
+/* --------------------------------------------------------------- typography */
+
+.fs-display {
+  letter-spacing: -0.035em;
+  line-height: 1.02;
+  font-weight: 700;
+}
+
+.fs-title {
+  letter-spacing: -0.022em;
+  font-weight: 650;
+}
+
+.fs-eyebrow {
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 650;
+  font-size: 10.5px;
+}
+
+.fs-num {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+
+/* ------------------------------------------------------------- hero surface */
+
+/* Four soft light sources over near-black, the way Linear and Stripe build
+   depth without photography. */
+.fs-mesh {
+  background-color: #0a0a0c;
+  background-image:
+    radial-gradient(58% 78% at 12% 8%, rgba(91, 91, 214, 0.42) 0%, rgba(91, 91, 214, 0) 62%),
+    radial-gradient(48% 70% at 88% 4%, rgba(56, 189, 248, 0.26) 0%, rgba(56, 189, 248, 0) 58%),
+    radial-gradient(60% 90% at 72% 96%, rgba(236, 72, 153, 0.2) 0%, rgba(236, 72, 153, 0) 60%),
+    radial-gradient(70% 60% at 42% 62%, rgba(16, 185, 129, 0.14) 0%, rgba(16, 185, 129, 0) 66%);
+}
+
+.fs-mesh-soft {
+  background-color: #fbfbfd;
+  background-image:
+    radial-gradient(52% 60% at 6% 0%, rgba(91, 91, 214, 0.1) 0%, rgba(91, 91, 214, 0) 60%),
+    radial-gradient(44% 56% at 96% 6%, rgba(56, 189, 248, 0.09) 0%, rgba(56, 189, 248, 0) 58%);
+}
+
+/* Hairline grid, the classic Stripe backdrop. */
+.fs-grid::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.055) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.055) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(120% 100% at 50% 0%, #000 35%, transparent 78%);
+  -webkit-mask-image: radial-gradient(120% 100% at 50% 0%, #000 35%, transparent 78%);
+  pointer-events: none;
+}
+
+.fs-grid-light::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, rgba(9, 9, 11, 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(9, 9, 11, 0.045) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(90% 80% at 50% 0%, #000 20%, transparent 75%);
+  -webkit-mask-image: radial-gradient(90% 80% at 50% 0%, #000 20%, transparent 75%);
+  pointer-events: none;
+}
+
+/* Fine grain so the large dark areas do not band on a projector. */
+.fs-grain::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.035;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Slow drifting light, switched off for anyone who asked for less motion. */
+.fs-aurora {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(72px);
+  opacity: 0.55;
+  pointer-events: none;
+  animation: fsDrift 22s ease-in-out infinite alternate;
+}
+
+@keyframes fsDrift {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(28px, -22px, 0) scale(1.12); }
+}
+
+/* ---------------------------------------------------------------- surfaces */
+
+.fs-card {
+  background: var(--fs-surface);
+  border: 1px solid var(--fs-line);
+  border-radius: var(--fs-radius);
+  box-shadow: var(--fs-shadow);
+}
+
+.fs-hover {
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 220ms ease;
+}
+
+.fs-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--fs-shadow-lift);
+  border-color: var(--fs-line-strong);
+}
+
+/* ------------------------------------------------------------------ motion */
+
+@keyframes fsFadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fs-in {
+  animation: fsFadeUp 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.fs-d1 { animation-delay: 60ms; }
+.fs-d2 { animation-delay: 120ms; }
+.fs-d3 { animation-delay: 180ms; }
+.fs-d4 { animation-delay: 240ms; }
+.fs-d5 { animation-delay: 300ms; }
+
+@keyframes fsGrow {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+.fs-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 9999px;
+  transform-origin: left center;
+  animation: fsGrow 720ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .fs-in,
+  .fs-bar > span,
+  .fs-aurora {
+    animation: none !important;
+  }
+  .fs-hover:hover { transform: none; }
+}
+
+/* ----------------------------------------------------------- illustrations */
+
+/* A still image on a page full of live numbers looks dead, so the artwork
+   breathes very slowly. The movement is small enough to read as depth. */
+@keyframes fsFloat {
+  from { transform: scale(1) translateY(0); }
+  to { transform: scale(1.045) translateY(-8px); }
+}
+
+.fs-float {
+  animation: fsFloat 15s ease-in-out infinite alternate;
+}
+
+.fs-art {
+  overflow: hidden;
+}
+
+.fs-art img {
+  transition: transform 800ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+.fs-art:hover img {
+  transform: scale(1.045);
+}
+
+/* Lets a dark illustration dissolve into the dark hero instead of sitting in a box. */
+.fs-bleed-left {
+  mask-image: linear-gradient(to right, transparent 0%, #000 38%, #000 100%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 38%, #000 100%);
+}
+
+.fs-bleed-soft {
+  mask-image: radial-gradient(120% 110% at 60% 45%, #000 52%, transparent 88%);
+  -webkit-mask-image: radial-gradient(120% 110% at 60% 45%, #000 52%, transparent 88%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fs-float { animation: none !important; }
+  .fs-art:hover img { transform: none; }
+}
+
+/* ------------------------------------------------------------------ drawer */
+
+@keyframes fsSlideIn {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes fsFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.fs-drawer {
+  animation: fsSlideIn 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.fs-scrim {
+  animation: fsFade 260ms ease both;
+}
+
+/* A step that is next to do gets a slow halo, so the eye lands on it. */
+@keyframes fsPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(91, 91, 214, 0.35); }
+  50% { box-shadow: 0 0 0 7px rgba(91, 91, 214, 0); }
+}
+
+.fs-next {
+  animation: fsPulse 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fs-drawer,
+  .fs-scrim,
+  .fs-next {
+    animation: none !important;
+  }
+}
+
+/* ----------------------------------------------------------------- tooltip */
+
+/* Hover or keyboard focus reveals the explanation, so the page itself can stay
+   short. Rendered above everything and never intercepts the pointer. */
+.fs-tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.fs-tip > .fs-tip-body {
+  position: absolute;
+  z-index: 60;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  width: max-content;
+  max-width: 290px;
+  transform: translate(-50%, 4px);
+  opacity: 0;
+  visibility: hidden;
+  /* Closes immediately, opens only after a deliberate pause, so a bubble never
+     flashes over the text someone is reading on the way to a button. */
+  transition: opacity 130ms ease 0ms, transform 130ms cubic-bezier(0.22, 1, 0.36, 1) 0ms, visibility 130ms 0ms;
+  pointer-events: none;
+  background: #18181b;
+  color: #f4f4f5;
+  border-radius: 12px;
+  padding: 9px 12px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  font-weight: 450;
+  letter-spacing: -0.005em;
+  text-align: left;
+  text-transform: none;
+  box-shadow: 0 10px 34px -10px rgba(0, 0, 0, 0.55);
+}
+
+.fs-tip > .fs-tip-body::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  margin-left: -5px;
+  border: 5px solid transparent;
+  border-top-color: #18181b;
+}
+
+.fs-tip:hover > .fs-tip-body,
+.fs-tip:focus-visible > .fs-tip-body,
+.fs-tip:focus-within > .fs-tip-body {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+  transition-delay: 320ms;
+}
+
+.fs-tip:focus-within > .fs-tip-body {
+  transition-delay: 0ms;
+}
+
+/* Under a sticky header an upward bubble would be covered, so it opens downward. */
+.fs-tip-below > .fs-tip-body {
+  bottom: auto;
+  top: calc(100% + 10px);
+  transform: translate(-50%, -4px);
+}
+
+.fs-tip-below:hover > .fs-tip-body,
+.fs-tip-below:focus-within > .fs-tip-body {
+  transform: translate(-50%, 0);
+}
+
+.fs-tip-below > .fs-tip-body::after {
+  top: auto;
+  bottom: 100%;
+  border-top-color: transparent;
+  border-bottom-color: #18181b;
+}
+
+/* Near the right edge the bubble would run off screen, so it anchors right. */
+.fs-tip-right > .fs-tip-body {
+  left: auto;
+  right: 0;
+  transform: translate(0, 4px);
+}
+
+.fs-tip-right:hover > .fs-tip-body,
+.fs-tip-right:focus-within > .fs-tip-body {
+  transform: translate(0, 0);
+}
+
+.fs-tip-right > .fs-tip-body::after {
+  left: auto;
+  right: 14px;
+  margin-left: 0;
+}
+
+.fs-underline {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--fs-ink-4);
+  cursor: help;
+}
+
+/* --------------------------------------------------------------- scrollbar */
+
+.fs-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(9, 9, 11, 0.18) transparent;
+}
+
+.fs-scroll::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+.fs-scroll::-webkit-scrollbar-thumb {
+  background: rgba(9, 9, 11, 0.16);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.fs-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(9, 9, 11, 0.3);
+  background-clip: content-box;
+}
+
+.fs-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ------------------------------------------------------------------- focus */
+
+.fs-focus:focus-visible {
+  outline: 2px solid var(--fs-accent);
+  outline-offset: 2px;
+  border-radius: 10px;
+}

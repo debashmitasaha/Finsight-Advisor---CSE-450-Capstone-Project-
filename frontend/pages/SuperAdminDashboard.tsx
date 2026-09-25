@@ -2,8 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Building2, ChevronLeft, Plus, RefreshCw, Trash2, UserCheck, Users, UserX, Wallet, X } from 'lucide-react';
 import Layout from '../components/Layout';
 import LoadingState from '../components/LoadingState';
+import { InfoDot } from '../components/ForensicKit';
 import { api } from '../lib/api';
-import { AdminOverview, Company, Department, UserAccount, UserRole } from '../types';
+import { AdminOverview, AuditLogResponse, Company, Department, UserAccount, UserRole } from '../types';
 
 interface SuperAdminDashboardProps {
   user: UserAccount;
@@ -18,6 +19,7 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
   const [companies, setCompanies] = useState<Company[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [users, setUsers] = useState<UserAccount[]>([]);
+  const [audit, setAudit] = useState<AuditLogResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [departmentCompanyId, setDepartmentCompanyId] = useState('');
@@ -80,20 +82,42 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
       .sort((left, right) => left.companyName.localeCompare(right.companyName));
   }, [companies, companyNameById, overview?.department_summaries]);
 
+  // Everything below is derived from data the page already had. The dashboard
+  // counted things but never said whether any of them needed attention.
+  const health = useMemo(() => {
+    const departmentsByCompany = new Map<string, number>();
+    departments.forEach((department) => {
+      const key = department.company_id || 'none';
+      departmentsByCompany.set(key, (departmentsByCompany.get(key) || 0) + 1);
+    });
+    const summaries = overview?.department_summaries || [];
+    return {
+      emptyCompanies: companies.filter((company) => !departmentsByCompany.get(company.company_id)).length,
+      idleDepartments: summaries.filter((department) => !department.transaction_count).length,
+      neverSignedIn: users.filter((account) => !account.last_login).length,
+      disabled: users.filter((account) => !account.is_active).length,
+      overBudget: summaries.filter((department) => Number(department.annual_budget_utilization_pct || 0) > 100).length,
+    };
+  }, [companies, departments, overview?.department_summaries, users]);
+
   const loadData = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [overviewData, companyData, departmentData, userData] = await Promise.all([
+      const [overviewData, companyData, departmentData, userData, auditData] = await Promise.all([
         api.adminOverview(),
         api.companies(),
         api.departments(),
         api.users(),
+        // The operator sees every company's activity. A failure here must not
+        // take the whole dashboard down with it.
+        api.auditLogs({ days: 14, limit: 12 }).catch(() => null),
       ]);
       setOverview(overviewData);
       setCompanies(companyData);
       setDepartments(departmentData);
       setUsers(userData);
+      setAudit(auditData);
       if (!departmentCompanyId && companyData[0]) {
         setDepartmentCompanyId(companyData[0].company_id);
       }
@@ -202,6 +226,59 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
         <StatCard icon={Users} label="Users" value={overview?.users ?? 0} />
         <StatCard icon={Plus} label="Uploads" value={overview?.uploads ?? 0} />
       </div>
+
+      <div>
+        <h2 className="flex items-center gap-2 text-sm font-black uppercase tracking-[0.2em] text-slate-400">
+          Needs attention
+          <InfoDot text="Derived from what is already on this page. Zero everywhere means nothing is half-configured." />
+        </h2>
+        <div className="mt-4 grid grid-cols-2 gap-4 xl:grid-cols-5">
+          <HealthCard
+            label="Empty companies"
+            value={health.emptyCompanies}
+            tip="A company with no department cannot receive a ledger, so nobody in it can do anything yet."
+          />
+          <HealthCard
+            label="Idle departments"
+            value={health.idleDepartments}
+            tip="Created but never given a ledger. Harmless, but it is usually a setup step someone forgot."
+          />
+          <HealthCard
+            label="Never signed in"
+            value={health.neverSignedIn}
+            tip="Accounts that exist but have never been used. Usually the generated password never reached the person."
+          />
+          <HealthCard
+            label="Disabled accounts"
+            value={health.disabled}
+            tip="They keep their history but cannot sign in."
+          />
+          <HealthCard
+            label="Over budget"
+            value={health.overBudget}
+            tip="Departments that have already spent more than their annual budget this year."
+          />
+        </div>
+      </div>
+
+      {audit && audit.entries.length > 0 && (
+        <div className={cardStyle}>
+          <h2 className="flex items-center gap-2 text-xl font-bold text-slate-900">
+            Recent activity
+            <InfoDot text="The last fourteen days across every company. Reads are not recorded, only actions that changed something." />
+          </h2>
+          <ul className="mt-4 divide-y divide-slate-100">
+            {audit.entries.slice(0, 8).map((entry) => (
+              <li key={entry.log_id} className="flex flex-wrap items-baseline justify-between gap-2 py-2.5 text-sm">
+                <span className="font-semibold text-slate-800">{entry.action}</span>
+                <span className="text-xs text-slate-400">
+                  {entry.actor_email || 'unknown'} · {entry.at ? new Date(entry.at).toLocaleString() : '—'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className={cardStyle}>
         <h2 className="text-xl font-bold text-slate-900 mb-4">Department Activity</h2>
         <div className="overflow-x-auto">
@@ -386,6 +463,16 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ user, onLogou
     </Layout>
   );
 };
+
+const HealthCard = ({ label, value, tip }: { label: string; value: number; tip: string }) => (
+  <div className={`rounded-2xl border p-5 ${value > 0 ? 'border-amber-200 bg-amber-50/60' : 'border-slate-200 bg-white'}`}>
+    <p className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">
+      {label}
+      <InfoDot text={tip} />
+    </p>
+    <p className={`mt-2 text-3xl font-black tabular-nums ${value > 0 ? 'text-amber-700' : 'text-slate-300'}`}>{value}</p>
+  </div>
+);
 
 const StatCard = ({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: number }) => (
   <div className={cardStyle}>

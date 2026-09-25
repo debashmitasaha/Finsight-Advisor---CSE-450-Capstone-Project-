@@ -3,8 +3,18 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    # Optional on purpose: a fresh clone has no backend/.env, and requiring one made
+    # `docker compose up` fail before it started anything. Copy backend/.env.example
+    # to backend/.env when you need a Gemini key or a real database URL; without it
+    # the app runs on its built-in defaults.
     env_file:
-      - ./backend/.env
+      - path: ./backend/.env
+        required: false
+    environment:
+      # Everything the app needs to come up on a machine that has nothing set.
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/finsight.db}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}
+      AUTO_SEED_DEMO: ${AUTO_SEED_DEMO:-True}
     ports:
       - "8000:8000"
     volumes:

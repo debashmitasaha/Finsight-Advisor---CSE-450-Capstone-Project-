@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -7,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 
+from app import audit
 from app.auth.router import get_current_user
 from app.database import get_db
 from app.forensic_engine import calibration as cal
@@ -23,6 +25,9 @@ from app.forensic_engine.models import (
     ThresholdCalibrationHistory,
 )
 from app.models import Company, Department, Transaction, User
+
+FINDING_INSERT_CHUNK = 2_000
+"""Rows per statement when a run's findings are written."""
 
 router = APIRouter(prefix="/forensic-engine", tags=["Forensic Intelligence Engine"])
 
@@ -695,30 +700,49 @@ def analyze(payload: AnalyseRequest, current_user: User = Depends(get_current_us
             )
         db.query(ForensicFinding).filter(ForensicFinding.department_id == payload.dept_id).delete(synchronize_session=False)
 
-        stored: dict[str, ForensicFinding] = {}
+        # A five-year ledger produces tens of thousands of findings. Creating one ORM
+        # object per finding, each carrying three JSON columns, put a quarter of an hour
+        # between the reviewer and their results; the identity map and unit-of-work buy
+        # nothing here because these rows are written once and never modified. Ids are
+        # supplied so the reviews below can be re-attached without waiting for a flush.
+        stored: dict[str, str] = {}
+        mappings: list[dict] = []
         for finding in scored:
-            row = ForensicFinding(
-                run_id=run_id,
-                transaction_id=finding.transaction_id,
-                department_id=payload.dept_id,
-                risk_score=finding.risk_score,
-                band=finding.band,
-                corroboration=finding.corroboration,
-                views_triggered=finding.views_triggered,
-                view_scores={view: round(score, 2) for view, score in finding.view_scores.items()},
-                evidence=finding.explanation(),
-                is_alert=finding.risk_score >= threshold,
+            finding_id = str(uuid.uuid4())
+            stored[finding.transaction_id] = finding_id
+            mappings.append(
+                {
+                    "finding_id": finding_id,
+                    "run_id": run_id,
+                    "transaction_id": finding.transaction_id,
+                    "department_id": payload.dept_id,
+                    "risk_score": finding.risk_score,
+                    "band": finding.band,
+                    "corroboration": finding.corroboration,
+                    "views_triggered": finding.views_triggered,
+                    "view_scores": {view: round(score, 2) for view, score in finding.view_scores.items()},
+                    "evidence": finding.explanation(),
+                    "is_alert": finding.risk_score >= threshold,
+                }
             )
-            db.add(row)
-            stored[finding.transaction_id] = row
+
+        for start in range(0, len(mappings), FINDING_INSERT_CHUNK):
+            db.bulk_insert_mappings(ForensicFinding, mappings[start:start + FINDING_INSERT_CHUNK])
         db.flush()
 
         if company:
             for review in db.query(ForensicReview).filter(ForensicReview.department_id == payload.dept_id).all():
                 fresh = stored.get(review.transaction_id)
                 if fresh is not None:
-                    review.finding_id = fresh.finding_id
+                    review.finding_id = fresh
         db.commit()
+
+    audit.record(
+        db,
+        current_user.user_id,
+        f"Ran the intelligence engine · {len(alerts)} alert{'' if len(alerts) == 1 else 's'}",
+        payload.dept_id,
+    )
 
     return {
         "success": True,
@@ -843,6 +867,7 @@ def benchmark(payload: BenchmarkRequest, current_user: User = Depends(get_curren
         "Synthetic benchmark: fraud planted by the system into a copy of the ledger. It tests the engine; "
         "it is not this company's ground truth and never sets its alert threshold."
     )
+    audit.record(db, current_user.user_id, "Ran the synthetic benchmark", payload.dept_id)
     return report
 
 
@@ -913,6 +938,8 @@ def update_calibration_settings(
         _, entry = _run_calibration(db, company, config_row, triggered_by="auto")
     db.commit()
 
+    audit.record(db, current_user.user_id, "Changed calibration settings", payload.dept_id)
+
     return {
         "success": True,
         "settings": stored,
@@ -935,6 +962,13 @@ def calibrate(payload: CalibrateRequest, current_user: User = Depends(get_curren
 
     outcome, entry = _run_calibration(db, company, config_row, triggered_by="manual")
     db.commit()
+
+    audit.record(
+        db,
+        current_user.user_id,
+        f"Ran a calibration · {'activated' if outcome.activated else 'candidate rejected'}",
+        payload.dept_id,
+    )
 
     return {
         "ready": outcome.ready,
@@ -1095,6 +1129,14 @@ def submit_review(payload: ReviewRequest, current_user: User = Depends(get_curre
     if due:
         _, entry = _run_calibration(db, company, config_row, triggered_by="auto")
     db.commit()
+
+    audit.record(
+        db,
+        current_user.user_id,
+        f"Recorded a verdict · {payload.label}",
+        payload.dept_id,
+        payload.transaction_id,
+    )
 
     return {
         "success": True,

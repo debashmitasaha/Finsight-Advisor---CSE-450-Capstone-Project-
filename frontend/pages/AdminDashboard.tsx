@@ -39,6 +39,9 @@ import {
 } from 'recharts';
 import Layout from '../components/Layout';
 import LoadingState from '../components/LoadingState';
+import AuditLogPanel from '../components/AuditLogPanel';
+import LedgerHistory from '../components/LedgerHistory';
+import { InfoDot, Tip } from '../components/ForensicKit';
 import ForensicIntelligence from './ForensicIntelligence';
 import { api } from '../lib/api';
 import {
@@ -1835,55 +1838,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   );
 
   const historyView = (
-    <div className="space-y-8">
-      <HeroHeader
-        eyebrow="Operational History"
-        title="Recent Transaction Timeline"
-        description="A cleaner ledger table for reviewing recent imported activity."
-      />
-      <div className={`${shellCard} p-7`}>
-        <SectionKicker title="Transaction History" subtitle="Recent imported records for the selected department." />
-        <div className="mt-6 overflow-x-auto">
-          <table className="w-full text-left">
-            <thead>
-              <tr className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">
-                <th className="pb-4">Date</th>
-                <th className="pb-4">Description</th>
-                <th className="pb-4">Amount</th>
-                <th className="pb-4">Group</th>
-                <th className="pb-4">Expense Type</th>
-                <th className="pb-4">Necessity</th>
-              </tr>
-            </thead>
-            <tbody>
-              {transactionsLoading ? (
-                <TransactionTableSkeleton />
-              ) : transactions.slice(0, 30).map((transaction) => (
-                <tr key={transaction.transaction_id} className="border-t border-slate-100 text-sm text-slate-700">
-                  <td className="py-4 font-semibold">{new Date(transaction.transaction_date).toLocaleDateString()}</td>
-                  <td className="py-4">
-                    <p className="font-bold text-slate-900">{transaction.description || 'No description'}</p>
-                    {transaction.flagged_reason && <p className="mt-1 text-xs text-red-500">{transaction.flagged_reason}</p>}
-                  </td>
-                  <td className="py-4 font-bold">TK {transaction.amount.toLocaleString()}</td>
-                  <td className="py-4">{transaction.group_name || 'Not grouped'}</td>
-                  <td className="py-4">
-                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-bold text-slate-600">
-                      {transaction.expense_category_name || 'Unassigned'}
-                    </span>
-                  </td>
-                  <td className="py-4">
-                    <span className={`rounded-full px-3 py-1 text-xs font-bold border ${COLORS[transaction.category || 'uncategorized'] || COLORS.uncategorized}`}>
-                      {transaction.category || 'uncategorized'}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+    <LedgerHistory
+      transactions={transactions}
+      loading={transactionsLoading}
+      onUpdated={(updated) =>
+        setTransactions((current) =>
+          current.map((row) => (row.transaction_id === updated.transaction_id ? { ...row, ...updated } : row)),
+        )
+      }
+    />
   );
 
   const employeesView = (
@@ -1891,6 +1854,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       accounts={employees.filter((employee) => employee.account_type === 'EMPLOYEE')}
       departments={departments}
       onUpdatePermissions={handleUpdateEmployeeScopes}
+      admins={employees.filter((employee) => employee.account_type !== 'EMPLOYEE')}
     />
   );
 
@@ -1909,7 +1873,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
               : activePath === '/history'
                 ? historyView
                 : activePath === '/audit-logs'
-                  ? historyView
+                  ? <AuditLogPanel />
                   : employeesView;
 
   const modalTransaction = selectedAnomaly ? transactionById.get(selectedAnomaly.transaction_id) || null : null;
@@ -2243,10 +2207,12 @@ const EmployeeAccessSection = ({
   accounts,
   departments,
   onUpdatePermissions,
+  admins = [],
 }: {
   accounts: UserAccount[];
   departments: Department[];
   onUpdatePermissions: (userId: string, permissionsByDepartment: Record<string, string[]>) => Promise<void>;
+  admins?: UserAccount[];
 }) => {
   const [expandedEmployeeId, setExpandedEmployeeId] = useState<string | null>(null);
   const [permissionDrafts, setPermissionDrafts] = useState<Record<string, Record<string, string[]>>>({});
@@ -2321,6 +2287,39 @@ const EmployeeAccessSection = ({
         title="Employee Access Map"
         description="Choose which company departments and workspace sections each employee can access."
       />
+
+      {/* The page listed people but never said anything about them. These four
+          numbers are the ones an administrator is actually checking for. */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <TeamMetric
+          label="Employees"
+          value={accounts.length}
+          note={`${admins.length} administrator${admins.length === 1 ? '' : 's'} besides`}
+          tip="Accounts that sign in to see a department. Administrators are counted separately because they already see everything in the company."
+        />
+        <TeamMetric
+          label="Disabled"
+          value={accounts.filter((employee) => !employee.is_active).length}
+          note="cannot sign in"
+          tone={accounts.some((employee) => !employee.is_active) ? 'warn' : 'plain'}
+          tip="A disabled account keeps its history and its verdicts but can no longer sign in."
+        />
+        <TeamMetric
+          label="Never signed in"
+          value={accounts.filter((employee) => !employee.last_login).length}
+          note="account created, never used"
+          tone={accounts.some((employee) => !employee.last_login) ? 'warn' : 'plain'}
+          tip="Usually means the generated password never reached the person. Worth chasing before the demo, not after."
+        />
+        <TeamMetric
+          label="Without access"
+          value={accounts.filter((employee) => employee.departments.length === 0).length}
+          note="granted no department"
+          tone={accounts.some((employee) => employee.departments.length === 0) ? 'warn' : 'plain'}
+          tip="They can sign in but will see an empty workspace until a department is granted below."
+        />
+      </div>
+
       <div className="space-y-5">
         {accounts.map((employee) => {
           const permissions = employeePermissions(employee);
@@ -2349,11 +2348,33 @@ const EmployeeAccessSection = ({
                 </div>
 
                 <div className="mt-6 flex flex-col gap-3 border-t border-slate-100 pt-5 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex items-center gap-2 text-slate-500">
-                    <Clock size={16} />
-                    <span className="text-[10px] font-black uppercase tracking-[0.18em]">
-                      {authorizedDepartmentIds.length} {authorizedDepartmentIds.length === 1 ? 'unit' : 'units'}
+                  <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-slate-500">
+                    <span className="inline-flex items-center gap-2">
+                      <Clock size={16} />
+                      <span className="text-[10px] font-black uppercase tracking-[0.18em]">
+                        {authorizedDepartmentIds.length} {authorizedDepartmentIds.length === 1 ? 'unit' : 'units'}
+                      </span>
                     </span>
+                    <Tip
+                      text={
+                        employee.last_login
+                          ? `Last signed in ${new Date(employee.last_login).toLocaleString()}. An account nobody uses is an account worth closing.`
+                          : 'This account has never been used. Either the password never reached the person, or they do not need it.'
+                      }
+                    >
+                      <span
+                        className={`cursor-help text-[10px] font-black uppercase tracking-[0.18em] ${
+                          employee.last_login ? 'text-slate-500' : 'text-amber-600'
+                        }`}
+                      >
+                        {employee.last_login ? `seen ${new Date(employee.last_login).toLocaleDateString()}` : 'never signed in'}
+                      </span>
+                    </Tip>
+                    <Tip text="What this person can do inside the departments they are granted. Open the row to change it.">
+                      <span className="cursor-help text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">
+                        {Object.values(permissions).reduce((total, list) => total + list.length, 0)} permissions
+                      </span>
+                    </Tip>
                   </div>
                   <button
                     type="button"
@@ -2514,6 +2535,31 @@ const expenseStatusClass = (status: string) => {
   if (status === 'rejected') return 'border border-red-100 bg-red-50 text-red-600';
   return 'border border-slate-200 bg-slate-50 text-slate-500';
 };
+
+const TeamMetric = ({
+  label,
+  value,
+  note,
+  tip,
+  tone = 'plain',
+}: {
+  label: string;
+  value: number;
+  note: string;
+  tip: string;
+  tone?: 'plain' | 'warn';
+}) => (
+  <div className={`${shellCard} p-6`}>
+    <p className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">
+      {label}
+      <InfoDot text={tip} />
+    </p>
+    <p className={`mt-3 text-4xl font-black tabular-nums tracking-[-0.04em] ${tone === 'warn' && value > 0 ? 'text-amber-600' : 'text-slate-950'}`}>
+      {value}
+    </p>
+    <p className="mt-1.5 text-xs text-slate-500">{note}</p>
+  </div>
+);
 
 const SectionKicker = ({ title, subtitle }: { title: string; subtitle: string }) => (
   <div>

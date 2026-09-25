@@ -35,18 +35,35 @@ def _fallback_embedding(text: str, dimensions: int = FALLBACK_DIMENSION) -> np.n
 
 def encode_texts(texts: Iterable[str], model_name: str = DEFAULT_MODEL_NAME, batch_size: int = 32) -> np.ndarray:
     texts = [text or "" for text in texts]
+
+    # A ledger repeats itself: the same narration appears on hundreds of rows. Encoding
+    # each distinct text once and handing back copies is exactly the same answer for a
+    # fraction of the work, which is the difference between a five-year upload taking
+    # minutes and taking seconds.
+    order: dict[str, int] = {}
+    positions: list[int] = []
+    for text in texts:
+        index = order.get(text)
+        if index is None:
+            index = len(order)
+            order[text] = index
+        positions.append(index)
+
     model = get_model(model_name)
     if model is None:
-        return np.vstack([_fallback_embedding(text) for text in texts]) if texts else np.zeros((0, FALLBACK_DIMENSION), dtype=np.float32)
+        if not texts:
+            return np.zeros((0, FALLBACK_DIMENSION), dtype=np.float32)
+        unique = np.vstack([_fallback_embedding(text) for text in order])
+        return unique[positions]
 
-    embeddings = model.encode(
-        texts,
+    unique = model.encode(
+        list(order),
         batch_size=batch_size,
         convert_to_numpy=True,
         normalize_embeddings=True,
         show_progress_bar=False,
     ).astype(np.float32)
-    return embeddings
+    return unique[positions] if positions else unique
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:

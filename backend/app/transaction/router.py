@@ -80,6 +80,9 @@ class TransactionUpdate(BaseModel):
 
 REQUIRED_COLUMNS = ["transaction_date", "description", "chart_acc_head"]
 
+# How many rows go into the database per statement during an upload.
+UPLOAD_INSERT_CHUNK = 2_000
+
 
 def normalize_upload_columns(dataframe: pd.DataFrame) -> pd.DataFrame:
     normalized = dataframe.copy()
@@ -130,13 +133,28 @@ def transaction_document_key(voucher_number: str | None, ref_number: str | None)
     return None
 
 
+def _clean_series(dataframe: pd.DataFrame, column: str) -> pd.Series:
+    """One column as trimmed strings, with every flavour of blank as the empty string.
+
+    Done column-wise on purpose. The same work per row costs a pandas scalar lookup
+    each time, which is what made a five-year upload take a minute.
+    """
+    if column not in dataframe.columns:
+        return pd.Series("", index=dataframe.index, dtype="object")
+    series = dataframe[column]
+    return series.where(series.notna(), "").astype(str).str.strip()
+
+
 def dataframe_document_keys(dataframe: pd.DataFrame) -> set[str]:
-    keys: set[str] = set()
-    for _, row in dataframe.iterrows():
-        key = transaction_document_key(optional_text(row, "voucher_number"), optional_text(row, "po_number"))
-        if key:
-            keys.add(key)
-    return keys
+    voucher = _clean_series(dataframe, "voucher_number").str.lower().str.split().str.join(" ")
+    reference = _clean_series(dataframe, "po_number").str.lower().str.split().str.join(" ")
+
+    both = voucher + "|" + reference
+    keys = both.where(
+        (voucher != "") & (reference != ""),
+        voucher.where(voucher != "", reference),
+    )
+    return set(keys[keys != ""].unique())
 
 
 def serialize_transaction(txn: Transaction) -> TransactionResponse:
@@ -256,48 +274,81 @@ async def upload_transactions(
     duplicate_rows = 0
     failed_rows: list[dict] = []
 
-    for row_index, row in dataframe.iterrows():
-        try:
-            transaction_date = pd.to_datetime(row["transaction_date"], utc=True).to_pydatetime()
-            amount = float(row["amount"])
-            transaction_type = str(row.get("transaction_type") or "debit").strip().lower()
-            description = optional_text(row, "description")
-            chart_acc_head = optional_text(row, "chart_acc_head")
-            cleaned_chart = clean_chart_account_head(chart_acc_head)
-            invoice_id = optional_text(row, "invoice_id")
-            voucher_number = optional_text(row, "voucher_number")
-            account_head_group = optional_text(row, "account_head_group")
-            voucher_type = optional_text(row, "voucher_type")
-            po_number = optional_text(row, "po_number")
+    # Parse the whole column at a time rather than the same field 34,000 times over.
+    # A five-year ledger is the normal case this endpoint has to survive, and row-wise
+    # parsing spent most of a minute in `pd.to_datetime` on single values.
+    dates = pd.to_datetime(dataframe["transaction_date"], utc=True, errors="coerce")
+    amounts = pd.to_numeric(dataframe.get("amount"), errors="coerce")
 
-            txn = Transaction(
-                # Supplying the primary key avoids PostgreSQL/SQLAlchemy bulk
-                # insert sentinel mismatches when many transactions are uploaded.
-                transaction_id=uuid.uuid4(),
-                department_id=dept_id,
-                transaction_date=transaction_date,
-                amount=amount,
-                transaction_type=transaction_type if transaction_type in {"debit", "credit"} else "debit",
-                description=description,
-                category="uncategorized",
-                chart_acc_head=chart_acc_head,
-                cleaned_chart_acc_head=cleaned_chart,
-                payment_method=optional_text(row, "payment_method"),
-                invoice_id=invoice_id,
-                voucher_number=voucher_number,
-                account_head_group=account_head_group,
-                voucher_type=voucher_type,
-                po_number=po_number,
-                has_receipt=normalize_bool(row.get("has_receipt")),
-                approval_status=str(row.get("approval_status", "pending") or "pending").lower(),
-                source_file_name=file.filename,
-                upload_batch_id=batch.upload_batch_id,
-            )
-            db.add(txn)
-            rows_processed += 1
-        except Exception as exc:  # pragma: no cover - row-specific data issues
+    kinds = _clean_series(dataframe, "transaction_type").str.lower()
+    kinds = kinds.where(kinds.isin(("debit", "credit")), "debit")
+
+    statuses = _clean_series(dataframe, "approval_status").str.lower()
+    statuses = statuses.where(statuses != "", "pending")
+
+    text_columns = {
+        name: _clean_series(dataframe, name)
+        for name in ("description", "chart_acc_head", "invoice_id", "voucher_number",
+                     "account_head_group", "voucher_type", "po_number", "payment_method")
+    }
+    # A ledger has a handful of distinct account heads and tens of thousands of rows,
+    # so the regex cleaning runs once per distinct head rather than once per row.
+    heads = text_columns["chart_acc_head"]
+    cleaned_lookup = {value: clean_chart_account_head(value) for value in heads.unique()}
+    cleaned_heads = heads.map(cleaned_lookup)
+
+    receipts = (
+        dataframe["has_receipt"].map(normalize_bool)
+        if "has_receipt" in dataframe.columns
+        else pd.Series(False, index=dataframe.index)
+    )
+
+    def none_if_blank(value: str) -> Optional[str]:
+        return value or None
+
+    mappings: list[dict] = []
+    for position, row_index in enumerate(dataframe.index):
+        transaction_date = dates.iat[position]
+        amount = amounts.iat[position] if amounts is not None else None
+        if pd.isna(transaction_date):
             rows_failed += 1
-            failed_rows.append({"row": int(row_index) + 2, "error": str(exc)})
+            failed_rows.append({"row": int(position) + 2, "error": "transaction_date is missing or unreadable"})
+            continue
+        if amount is None or pd.isna(amount):
+            rows_failed += 1
+            failed_rows.append({"row": int(position) + 2, "error": "amount is missing or not a number"})
+            continue
+
+        mappings.append({
+            # Supplying the primary key avoids PostgreSQL/SQLAlchemy bulk
+            # insert sentinel mismatches when many transactions are uploaded.
+            "transaction_id": uuid.uuid4(),
+            "department_id": dept_id,
+            "transaction_date": transaction_date.to_pydatetime(),
+            "amount": float(amount),
+            "transaction_type": kinds.iat[position],
+            "description": none_if_blank(text_columns["description"].iat[position]),
+            "category": "uncategorized",
+            "chart_acc_head": none_if_blank(text_columns["chart_acc_head"].iat[position]),
+            "cleaned_chart_acc_head": cleaned_heads.iat[position],
+            "payment_method": none_if_blank(text_columns["payment_method"].iat[position]),
+            "invoice_id": none_if_blank(text_columns["invoice_id"].iat[position]),
+            "voucher_number": none_if_blank(text_columns["voucher_number"].iat[position]),
+            "account_head_group": none_if_blank(text_columns["account_head_group"].iat[position]),
+            "voucher_type": none_if_blank(text_columns["voucher_type"].iat[position]),
+            "po_number": none_if_blank(text_columns["po_number"].iat[position]),
+            "has_receipt": bool(receipts.iat[position]),
+            "approval_status": statuses.iat[position],
+            "risk_score": 0,
+            "is_flagged": False,
+            "source_file_name": file.filename,
+            "upload_batch_id": batch.upload_batch_id,
+        })
+        rows_processed += 1
+
+    # In chunks, so a large ledger never builds one enormous statement.
+    for start in range(0, len(mappings), UPLOAD_INSERT_CHUNK):
+        db.bulk_insert_mappings(Transaction, mappings[start:start + UPLOAD_INSERT_CHUNK])
 
     batch.status = "completed" if rows_failed == 0 else "completed_with_errors"
     db.commit()

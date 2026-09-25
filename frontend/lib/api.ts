@@ -1,4 +1,6 @@
 import {
+  CaseCalibration,
+  CaseDetailedAnalysis,
   AdminOverview,
   BenchmarkResponse,
   CalibrationRunResponse,
@@ -30,6 +32,11 @@ import {
   UploadBatchSummary,
   UploadTransactionsResponse,
   UserAccount,
+  AuditLogResponse,
+  GroupRosterRow,
+  AnomalyCaseDetail,
+  AnomalyCaseSummary,
+  HistoricalScan,
 } from '../types';
 const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8000';
 const AUTH_EXPIRED_EVENT = 'finsight-auth-expired';
@@ -92,15 +99,85 @@ export const api = {
     form.append('file', file);
     return request<UploadTransactionsResponse>('/transactions/upload', { method: 'POST', body: form });
   },
-  transactions: (deptId: string, options: { limit?: number; offset?: number; uploadBatchId?: string | null; groupNo?: number | null; chartAccHeadName?: string | null } = {}) => {
+  transactions: (
+    deptId: string,
+    options: {
+      limit?: number;
+      offset?: number;
+      uploadBatchId?: string | null;
+      groupNo?: number | null;
+      chartAccHeadName?: string | null;
+      // The endpoint has always accepted these; nothing was sending them.
+      category?: string | null;
+      flagged?: boolean | null;
+      month?: number | null;
+      year?: number | null;
+    } = {},
+  ) => {
     const params = new URLSearchParams();
     if (options.limit) params.set('limit', String(options.limit));
     if (options.offset) params.set('offset', String(options.offset));
     if (options.uploadBatchId) params.set('upload_batch_id', options.uploadBatchId);
     if (options.groupNo !== null && options.groupNo !== undefined) params.set('group_no', String(options.groupNo));
     else if (options.chartAccHeadName) params.set('chart_acc_head_name', options.chartAccHeadName);
+    if (options.category) params.set('category', options.category);
+    if (options.flagged !== null && options.flagged !== undefined) params.set('flagged', String(options.flagged));
+    if (options.month) params.set('month', String(options.month));
+    if (options.year) params.set('year', String(options.year));
     const query = params.toString();
     return request<Transaction[]>(`/transactions/dept/${deptId}${query ? `?${query}` : ''}`);
+  },
+
+  /** Correct one row: its necessity, its approval state, or whether it stays flagged. */
+  updateTransaction: (
+    transactionId: string,
+    patch: { category?: string; approval_status?: string; is_flagged?: boolean; flagged_reason?: string | null },
+  ) => request<Transaction>(`/transactions/${transactionId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+
+  /** The semantic groups themselves, with the narration that defines each one. */
+  groupRoster: (deptId: string) => request<GroupRosterRow[]>(`/grouping/dept/${deptId}/groups`),
+
+  /* ------------------------------ historical full-population scanning ---- */
+
+  /** Mine a company's whole history and return ranked audit cases. */
+  engineHistoricalScan: (payload: { dept_id?: string; company_id?: string; start_date?: string; end_date?: string; max_cases?: number }) =>
+    request<HistoricalScan>('/forensic-engine/historical-scans', { method: 'POST', body: JSON.stringify(payload) }),
+
+  engineHistoricalScans: (companyId?: string, limit = 10) => {
+    const params = new URLSearchParams();
+    if (companyId) params.set('company_id', companyId);
+    params.set('limit', String(limit));
+    return request<HistoricalScan[]>(`/forensic-engine/historical-scans?${params.toString()}`);
+  },
+
+  engineHistoricalCases: (scanId: string, options: { band?: string; reviewStatus?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (options.band) params.set('band', options.band);
+    if (options.reviewStatus) params.set('review_status', options.reviewStatus);
+    if (options.limit) params.set('limit', String(options.limit));
+    const query = params.toString();
+    return request<AnomalyCaseSummary[]>(`/forensic-engine/historical-scans/${scanId}/cases${query ? `?${query}` : ''}`);
+  },
+
+  engineCase: (caseId: string) => request<AnomalyCaseDetail>(`/forensic-engine/cases/${caseId}`),
+
+  engineCaseDetailedAnalysis: (caseId: string) =>
+    request<CaseDetailedAnalysis>(`/forensic-engine/cases/${caseId}/detailed-analysis`, { method: 'POST' }),
+  engineCaseCalibration: () => request<CaseCalibration>('/forensic-engine/case-calibration'),
+  engineReviewCase: (caseId: string, payload: { status: string; note?: string | null }) =>
+    request<{ success: boolean; case: AnomalyCaseSummary }>(`/forensic-engine/cases/${caseId}/review`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  /** Who did what, newest first. Administrators only. */
+  auditLogs: (options: { limit?: number; days?: number; deptId?: string | null } = {}) => {
+    const params = new URLSearchParams();
+    if (options.limit) params.set('limit', String(options.limit));
+    if (options.days) params.set('days', String(options.days));
+    if (options.deptId) params.set('dept_id', options.deptId);
+    const query = params.toString();
+    return request<AuditLogResponse>(`/admin/audit-logs${query ? `?${query}` : ''}`);
   },
   transactionsPage: (deptId: string, options: { limit?: number; offset?: number; uploadBatchId?: string | null; groupNo?: number | null; chartAccHeadName?: string | null } = {}) => {
     const params = new URLSearchParams();

@@ -70,13 +70,22 @@ def assign_groups_for_department(
 
     # Rebuild each existing group's profile from its transaction descriptions. This
     # also upgrades old groups whose stored embedding was based on account heads.
+    # One pass over the transactions, rather than one pass per group: a ledger with
+    # tens of thousands of rows and hundreds of groups would otherwise spend millions
+    # of comparisons deciding which rows belong to which group.
+    members_by_group_no: dict[float, list[int]] = {}
+    for index, txn in enumerate(transactions):
+        if txn.group_no is not None:
+            members_by_group_no.setdefault(float(txn.group_no), []).append(index)
+
     embeddings_by_group = {}
     for group in existing_groups:
-        member_vectors = [
-            transaction_embeddings[index]
-            for index, txn in enumerate(transactions)
-            if txn.group_no is not None and group.group_no is not None and float(txn.group_no) == float(group.group_no)
-        ]
+        member_indices = (
+            members_by_group_no.get(float(group.group_no), [])
+            if group.group_no is not None
+            else []
+        )
+        member_vectors = [transaction_embeddings[index] for index in member_indices]
         if member_vectors:
             profile = np.mean(np.vstack(member_vectors), axis=0)
             profile_norm = np.linalg.norm(profile)
@@ -90,6 +99,52 @@ def assign_groups_for_department(
     groups_assigned = 0
     new_groups_created = 0
 
+    # The candidate profiles as one matrix, so each transaction is matched with a single
+    # dot product against every group at once instead of a Python loop per group. The
+    # profiles are unit vectors, so the dot product is the cosine similarity; groups
+    # without a usable profile are left out of the matrix entirely, exactly as the
+    # per-group loop skipped them.
+    #
+    # The matrix grows as groups are created, so it is held in a buffer that doubles
+    # when it fills. Re-stacking on every new group would make a ledger that produces
+    # many groups quadratic all over again.
+    def unit_vector(vector: np.ndarray) -> np.ndarray:
+        norm = np.linalg.norm(vector)
+        return vector / norm if norm else vector
+
+    candidate_groups: list[Group] = []
+    candidate_rows: list[np.ndarray] = []
+    for group in existing_groups:
+        profile = embeddings_by_group.get(group)
+        if profile is None or profile.size == 0:
+            continue
+        candidate_groups.append(group)
+        candidate_rows.append(unit_vector(profile))
+
+    dimension = int(transaction_embeddings.shape[1]) if transaction_embeddings.size else 0
+    candidate_buffer = np.zeros((max(16, len(candidate_rows) * 2), dimension), dtype=np.float32)
+    for position, profile in enumerate(candidate_rows):
+        candidate_buffer[position] = profile
+    candidate_count = len(candidate_rows)
+
+    def add_candidate(group: Group, vector: np.ndarray) -> None:
+        nonlocal candidate_buffer, candidate_count
+        if candidate_count == candidate_buffer.shape[0]:
+            grown = np.zeros((candidate_buffer.shape[0] * 2, dimension), dtype=np.float32)
+            grown[:candidate_count] = candidate_buffer[:candidate_count]
+            candidate_buffer = grown
+        candidate_buffer[candidate_count] = unit_vector(vector)
+        candidate_count += 1
+        candidate_groups.append(group)
+
+    # Two rows with identical narration always land in the same group: identical text
+    # gives an identical embedding, an identical embedding scores 1.0 against the group
+    # built from it, and 1.0 is the highest score available - so the first such group
+    # always wins the argmax. Deciding once per distinct narration instead of once per
+    # row is therefore exactly the same answer, and a five-year ledger repeats its
+    # narrations about fourteen times over.
+    decided: dict[str, tuple[float, str]] = {}
+
     for index, txn in enumerate(transactions):
         cleaned = clean_chart_account_head(txn.chart_acc_head)
         txn.cleaned_chart_acc_head = cleaned
@@ -97,22 +152,26 @@ def assign_groups_for_department(
         if not text:
             continue
 
+        already = decided.get(text)
+        if already is not None:
+            txn.group_no, txn.group_name = already
+            groups_assigned += 1
+            continue
+
         vector = transaction_embeddings[index]
         best_match: Optional[Group] = None
         best_score = -1.0
 
-        for group in existing_groups:
-            profile = embeddings_by_group.get(group)
-            if profile is None or profile.size == 0:
-                continue
-            score = cosine_similarity(vector, profile)
-            if score > best_score:
-                best_score = score
-                best_match = group
+        if candidate_count:
+            scores = candidate_buffer[:candidate_count] @ unit_vector(vector)
+            position = int(np.argmax(scores))  # the first maximum, as the loop took
+            best_score = float(scores[position])
+            best_match = candidate_groups[position]
 
         if best_match and best_score >= similarity_threshold:
             txn.group_no = best_match.group_no
             txn.group_name = best_match.group_name or f"group_{int(float(best_match.group_no))}"
+            decided[text] = (txn.group_no, txn.group_name)
             groups_assigned += 1
             continue
 
@@ -131,8 +190,11 @@ def assign_groups_for_department(
         db.flush()
         existing_groups.append(new_group)
         embeddings_by_group[new_group] = vector
+        # A new group is a candidate for every transaction after it, exactly as before.
+        add_candidate(new_group, vector)
         txn.group_no = group_number
         txn.group_name = group_name
+        decided[text] = (group_number, group_name)
         groups_assigned += 1
         new_groups_created += 1
 
