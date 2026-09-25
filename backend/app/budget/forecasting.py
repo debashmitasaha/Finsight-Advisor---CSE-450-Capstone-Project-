@@ -197,7 +197,17 @@ def _boxcox_transform(series: pd.Series) -> tuple[pd.Series, float, float]:
 
 
 def _inverse_boxcox(values: np.ndarray | pd.Series, lam: float, shift: float) -> np.ndarray:
-    restored = inv_boxcox(np.asarray(values, dtype=float), lam) - shift
+    values = np.asarray(values, dtype=float)
+    if lam == 0:
+        restored = np.exp(values)
+    else:
+        # Wide confidence-interval bounds can push (lam * x + 1) negative, which makes
+        # the fractional power below undefined (NaN) rather than merely extreme. Clamping
+        # to a small positive epsilon keeps the inverse defined and collapses the result
+        # toward 0 after the shift/floor below, instead of propagating NaN into the response.
+        base = np.clip(lam * values + 1.0, 1e-9, None)
+        restored = np.power(base, 1.0 / lam)
+    restored = restored - shift
     return np.maximum(restored, 0.0)
 
 
