@@ -26,9 +26,28 @@ def count_transactions_for_department(db: Session, department_id: str) -> int:
     )
 
 
+def get_budget_reference_date(db: Session, department_id: str) -> datetime:
+    """The date budget-pace math treats as "today".
+
+    Test/demo ledgers are historical (e.g. all dated 2023), so anchoring
+    "current year" to the real wall clock silently zeroes out every
+    used-budget and remaining-forecast calculation once the system date has
+    moved past the data. Anchoring to the department's most recent actual
+    transaction instead makes the math work the same way for live data
+    (where that's naturally close to today) and historical data alike.
+    """
+    latest = (
+        db.query(func.max(Transaction.transaction_date))
+        .filter(Transaction.department_id == department_id)
+        .scalar()
+    )
+    return latest or datetime.now(timezone.utc)
+
+
 def get_department_budget_snapshot(db: Session, department: Department) -> dict[str, float]:
     budget = float(department.annual_budget or 0)
-    current_year = datetime.now(timezone.utc).year
+    reference_date = get_budget_reference_date(db, department.department_id)
+    current_year = reference_date.year
     used_budget = float(
         db.query(func.coalesce(func.sum(Transaction.amount), 0))
         .filter(
@@ -43,6 +62,7 @@ def get_department_budget_snapshot(db: Session, department: Department) -> dict[
     return {
         "used_budget_current_year": round(used_budget, 2),
         "annual_budget_utilization_pct": round(utilization, 2),
+        "budget_reference_date": reference_date.isoformat(),
     }
 
 

@@ -290,6 +290,12 @@ class BudgetForecast(Base):
     model_version: Mapped[str | None] = mapped_column(Text, nullable=True)
     lower_bound: Mapped[float | None] = mapped_column(Numeric(15, 2), nullable=True)
     upper_bound: Mapped[float | None] = mapped_column(Numeric(15, 2), nullable=True)
+    # Which data scope this run was computed from ("latest_batch", "full_history",
+    # "upload_batch", "date_range"). Needed to tell an ongoing department-wide
+    # prediction apart from a one-off run scoped to a specific uploaded file, so
+    # accuracy tracking and budget alerts don't get skewed by exploratory runs.
+    source_mode: Mapped[str | None] = mapped_column(Text, nullable=True)
+    upload_batch_id: Mapped[str | None] = mapped_column(ForeignKey("upload_batch.upload_batch_id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     department: Mapped[Department | None] = relationship("Department", back_populates="forecasts")

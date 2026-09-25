@@ -11,8 +11,10 @@ import {
   ChevronRight,
   Clock,
   CircleDollarSign,
+  Database,
   Eye,
   FileUp,
+  GitCompare,
   Plus,
   Radar,
   Shield,
@@ -33,6 +35,8 @@ import {
   CartesianGrid,
   Cell,
   Legend,
+  Line,
+  LineChart,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -53,6 +57,7 @@ import {
   ExpenseCategory,
   ExpenseGroupSummary,
   Forecast,
+  ForecastAccuracyResponse,
   ForecastDiagnostics,
   ForecastSourceMode,
   ForensicRunResponse,
@@ -72,6 +77,8 @@ const shellCard = 'rounded-[32px] border border-slate-200/80 bg-white shadow-[0_
 type ForensicMode = 'rule' | 'engine';
 type ExpenseReviewTab = 'ledger' | 'pending' | 'approved';
 const MAX_ANNUAL_BUDGET = 9_999_999_999_999.99;
+// Mirrors ONGOING_FORECAST_SCOPES in backend/app/budget/router.py.
+const ONGOING_FORECAST_SCOPES = ['latest_batch', 'full_history'];
 const LEDGER_PAGE_SIZE = 50;
 const GROUP_TRANSACTION_PAGE_SIZE = 50;
 const EMPLOYEE_SCOPE_OPTIONS = [
@@ -91,6 +98,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [forecastHistory, setForecastHistory] = useState<{ month: string; amount: number }[]>([]);
   const [forecastDiagnostics, setForecastDiagnostics] = useState<ForecastDiagnostics | null>(null);
   const [forecastModel, setForecastModel] = useState<{ model_type: string; model_version: string } | null>(null);
+  const [forecastAccuracy, setForecastAccuracy] = useState<ForecastAccuracyResponse | null>(null);
   const [monthsAhead, setMonthsAhead] = useState(3);
   const [sourceMode, setSourceMode] = useState<ForecastSourceMode>('latest_batch');
   const [uploadBatches, setUploadBatches] = useState<UploadBatchSummary[]>([]);
@@ -267,6 +275,25 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
 
   useEffect(() => {
     if (!selectedDeptId) return;
+    const needsAccuracy = activePath === '/dept-status' || activePath === '/reports';
+    if (!needsAccuracy) return;
+
+    let cancelled = false;
+    api
+      .forecastAccuracy(selectedDeptId)
+      .then((response) => {
+        if (!cancelled) setForecastAccuracy(response);
+      })
+      .catch(() => {
+        if (!cancelled) setForecastAccuracy(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDeptId, activePath]);
+
+  useEffect(() => {
+    if (!selectedDeptId) return;
     let cancelled = false;
     const departmentId = selectedDeptId;
 
@@ -311,7 +338,13 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       return;
     }
     if (!uploadBatches.some((batch) => batch.upload_batch_id === selectedBatchId)) {
-      setSelectedBatchId(uploadBatches[0].upload_batch_id);
+      // Batches are ordered most-recent-first, but "most recent" can be an
+      // upload that never actually linked any transactions (e.g. a failed or
+      // superseded re-upload) -- defaulting to that leaves the picker on a
+      // batch that will just error out. Prefer the most recent one that
+      // actually has data; only fall back to the literal most recent if none do.
+      const defaultBatch = uploadBatches.find((batch) => batch.transaction_count > 0) || uploadBatches[0];
+      setSelectedBatchId(defaultBatch.upload_batch_id);
     }
   }, [sourceMode, uploadBatches, selectedBatchId]);
 
@@ -835,6 +868,53 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       : '';
     return `${selectedDepartment?.department_name || 'This department'} is projected to spend ${amount} in ${formatMonthLabel(nextForecast.forecast_period_start)} (likely range ${range}), using the ${modelLabel} model${coverage}.`;
   }, [nextForecast, forecastModel, forecastDiagnostics, selectedDepartment]);
+
+  // Same pace logic as the backend's budget-pace alert (see
+  // _maybe_create_budget_pace_alert in budget/router.py): year-to-date actual
+  // spend plus the forecasted remaining months of the year, against the
+  // department's annual budget. Computed client-side from data already on
+  // screen so it updates live as the forecast preview changes, independent
+  // of whether an alert has actually fired for this department yet.
+  const budgetPaceStatus = useMemo(() => {
+    const annualBudget = Number(selectedDepartment?.annual_budget || 0);
+    if (!selectedDepartment || annualBudget <= 0) return null;
+    const usedSoFar = Number(selectedDepartment.used_budget_current_year || 0);
+    // Anchored to the department's most recent actual transaction (see
+    // get_budget_reference_date in admin/router.py), not the real wall
+    // clock -- historical/demo data (e.g. all dated 2023) would otherwise
+    // never count as "this year" once the system date moves past it.
+    const now = selectedDepartment.budget_reference_date
+      ? new Date(selectedDepartment.budget_reference_date)
+      : new Date();
+    const projectedRemaining = forecasts
+      .filter((forecast) => {
+        // Mirror the backend's ONGOING_FORECAST_SCOPES: a one-off forecast
+        // scoped to a specific uploaded file must never count toward the
+        // department's real budget pace.
+        if (forecast.source_mode && !ONGOING_FORECAST_SCOPES.includes(forecast.source_mode)) return false;
+        const periodStart = new Date(forecast.forecast_period_start);
+        return periodStart.getFullYear() === now.getFullYear() && periodStart > now;
+      })
+      .reduce((sum, forecast) => sum + forecast.predicted_amount, 0);
+    const usedPct = Math.round((usedSoFar / annualBudget) * 100);
+    const pacePct = Math.round(((usedSoFar + projectedRemaining) / annualBudget) * 100);
+    const tone = pacePct >= 100 ? ('red' as const) : pacePct >= 90 ? ('amber' as const) : ('green' as const);
+    const label = pacePct >= 100 ? 'Over Pace' : pacePct >= 90 ? 'Approaching Budget' : 'On Pace';
+    const reason = projectedRemaining > 0
+      ? `${usedPct}% of budget used so far, on track to reach ${pacePct}% by year end.`
+      : `${usedPct}% of budget used so far. No forecast yet for the rest of the year.`;
+    return { label, pacePct, usedPct, tone, reason };
+  }, [selectedDepartment, forecasts]);
+
+  const forecastAccuracyChartData = useMemo(() => {
+    if (!forecastAccuracy) return [];
+    return forecastAccuracy.entries.map((entry) => ({
+      month: formatShortMonth(entry.month),
+      predicted: Math.round(entry.predicted_amount),
+      actual: entry.error_pct === null ? null : Math.round(entry.actual_amount),
+      errorPct: entry.error_pct,
+    }));
+  }, [forecastAccuracy]);
 
   const departmentBudgetData = useMemo(() => {
     return departments.map((department) => ({
@@ -1476,7 +1556,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
                 <select value={selectedBatchId} onChange={(e) => setSelectedBatchId(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-slate-700">
                   {uploadBatches.map((batch) => (
                     <option key={batch.upload_batch_id} value={batch.upload_batch_id}>
-                      {batch.source_file_name} ({batch.transaction_count} rows)
+                      {batch.source_file_name} ({batch.transaction_count} rows{batch.transaction_count === 0 ? ' — no data' : ''})
                     </option>
                   ))}
                 </select>
@@ -1800,7 +1880,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[1.35fr,0.65fr] gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-[1.35fr,0.65fr] gap-6 items-start">
+        <div className="space-y-6">
         <div className={`${shellCard} p-7`}>
           <SectionKicker title="Budget Forecast Curve" subtitle="Historical monthly spend extended into the prediction window." />
           {!forecastLoading && forecastSummaryLine && (
@@ -1860,9 +1941,80 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
           </div>
         </div>
 
+        <div className={`${shellCard} p-7`}>
+          <SectionKicker title="Forecast Accuracy" subtitle="Predicted vs. actual, once a month closes." />
+          <div className="mt-5 space-y-3">
+            {forecastAccuracy && forecastAccuracy.entries.length > 0 ? (
+              <>
+                <div className="flex gap-3">
+                  <DataPill
+                    label="Average Error"
+                    value={forecastAccuracy.average_error_pct !== null ? `${forecastAccuracy.average_error_pct}%` : 'N/A'}
+                  />
+                  <DataPill label="Months Evaluated" value={forecastAccuracy.months_evaluated} />
+                </div>
+                <div className="pt-2" style={{ height: 280 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={forecastAccuracyChartData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#EEF2FF" vertical={false} />
+                      <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#94A3B8' }} axisLine={false} tickLine={false} />
+                      <YAxis
+                        tick={{ fontSize: 11, fill: '#94A3B8' }}
+                        axisLine={false}
+                        tickLine={false}
+                        width={48}
+                        tickFormatter={(value) => `${Math.round(Number(value) / 1000)}k`}
+                      />
+                      <Tooltip content={<AccuracyTooltip />} />
+                      <Legend wrapperStyle={{ fontSize: 12 }} />
+                      <Line type="monotone" dataKey="predicted" name="Predicted" stroke="#94A3B8" strokeWidth={2} strokeDasharray="6 4" dot={false} />
+                      <Line
+                        type="monotone"
+                        dataKey="actual"
+                        name="Actual"
+                        stroke="#1D4ED8"
+                        strokeWidth={3}
+                        dot={{ r: 4, fill: '#1D4ED8' }}
+                        connectNulls={false}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-slate-500">
+                No completed months yet. Accuracy appears here once a forecasted month has passed and real spend has come in for it.
+              </p>
+            )}
+          </div>
+        </div>
+        </div>
+
         <div className="space-y-6">
           <div className={`${shellCard} p-7`}>
-            <SectionKicker title="Forecast Summary" subtitle="Current forecast health and coverage." />
+            <div className="flex items-start justify-between gap-4">
+              <SectionKicker title="Forecast Summary" subtitle="Current forecast health and coverage." />
+              {budgetPaceStatus && (
+                <span
+                  className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs font-black uppercase tracking-wide ${
+                    budgetPaceStatus.tone === 'red'
+                      ? 'bg-red-50 text-red-600 border border-red-100'
+                      : budgetPaceStatus.tone === 'amber'
+                        ? 'bg-amber-50 text-amber-600 border border-amber-100'
+                        : 'bg-emerald-50 text-emerald-600 border border-emerald-100'
+                  }`}
+                >
+                  {budgetPaceStatus.label}
+                </span>
+              )}
+            </div>
+            {budgetPaceStatus && (
+              <>
+                <p className="mt-2 text-sm font-medium text-slate-500">{budgetPaceStatus.reason}</p>
+                <BudgetPaceThermometer usedPct={budgetPaceStatus.usedPct} pacePct={budgetPaceStatus.pacePct} tone={budgetPaceStatus.tone} />
+              </>
+            )}
+            <ForecastMethodDiagram />
             <div className="mt-5 space-y-4">
               <DataPill label="Forecast Status" value={forecasts.length ? 'Ready' : 'Pending'} isLoading={forecastLoading} />
               <DataPill label="Latest Model" value={forecastModel?.model_type ? forecastModel.model_type.replace(/_/g, ' ') : 'N/A'} isLoading={forecastLoading} />
@@ -2800,6 +2952,70 @@ const DataPill = ({ label, value, isLoading = false }: { label: string; value: s
   </div>
 );
 
+// A small, static explainer of the forecasting pipeline -- Forensic Intelligence
+// grounds every tab in a bespoke illustration; this is Budget's version of that,
+// built as icons rather than artwork since there's no image-generation tool here.
+const ForecastMethodDiagram = () => {
+  const steps: { icon: React.ElementType; label: string; note: string }[] = [
+    { icon: Database, label: 'Spend History', note: 'Cleaned & grouped by month' },
+    { icon: GitCompare, label: 'Model Selection', note: 'SARIMA vs. baseline, best on holdout' },
+    { icon: TrendingUp, label: 'Prediction + Range', note: 'Point forecast with confidence band' },
+  ];
+  return (
+    <div className="mt-4 flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+      {steps.map((step, index) => (
+        <React.Fragment key={step.label}>
+          <div className="flex min-w-0 flex-1 flex-col items-center gap-1.5 text-center">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-blue-600">
+              <step.icon size={17} />
+            </div>
+            <p className="text-[11px] font-black leading-tight text-slate-700">{step.label}</p>
+            <p className="text-[10px] leading-tight text-slate-400">{step.note}</p>
+          </div>
+          {index < steps.length - 1 && <ArrowRight size={14} className="flex-none text-slate-300" />}
+        </React.Fragment>
+      ))}
+    </div>
+  );
+};
+
+// A proportional bar for the pace pill's numbers, in the same spirit as Forensic's
+// diagrams: never show a bare status without a visual grounded in the real figures
+// behind it. Used-so-far and projected-remaining are drawn to scale against the
+// 100% budget line, so the pill's claim is visibly, not just textually, true.
+const BudgetPaceThermometer = ({ usedPct, pacePct, tone }: { usedPct: number; pacePct: number; tone: 'red' | 'amber' | 'green' }) => {
+  const scaleMax = Math.max(120, pacePct + 15, 100);
+  const clampPct = (value: number) => Math.min(100, Math.max(0, (value / scaleMax) * 100));
+  const usedWidth = clampPct(usedPct);
+  const pacedWidth = clampPct(pacePct);
+  const projectedWidth = Math.max(0, pacedWidth - usedWidth);
+  const toneFill = tone === 'red' ? '#DC2626' : tone === 'amber' ? '#D97706' : '#059669';
+
+  return (
+    <div className="mt-3">
+      <div className="relative h-3 w-full overflow-hidden rounded-full bg-slate-100">
+        <div className="absolute inset-y-0 left-0 rounded-full bg-blue-700" style={{ width: `${usedWidth}%` }} />
+        <div
+          className="absolute inset-y-0 rounded-full opacity-75"
+          style={{ left: `${usedWidth}%`, width: `${projectedWidth}%`, backgroundColor: toneFill }}
+        />
+        <div className="absolute inset-y-0 w-0 border-l-2 border-dashed border-slate-500" style={{ left: `${clampPct(100)}%` }} />
+      </div>
+      <div className="mt-1.5 flex items-center justify-between text-[10px] font-bold uppercase tracking-wide text-slate-400">
+        <span className="flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full bg-blue-700" />
+          Used {usedPct}%
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: toneFill }} />
+          Projected {pacePct}%
+        </span>
+        <span>Budget 100%</span>
+      </div>
+    </div>
+  );
+};
+
 const ReadinessCard = ({
   label,
   value,
@@ -2850,6 +3066,36 @@ const ForecastTooltip = ({ active, payload, label }: { active?: boolean; payload
     rows.push({ label: 'Likely range', value: `TK ${point.lower.toLocaleString()} – TK ${upper.toLocaleString()}` });
   }
   if (!rows.length) return null;
+
+  return (
+    <div className="rounded-2xl border border-blue-100 bg-white px-4 py-3 shadow-[0_12px_40px_rgba(59,130,246,0.14)]">
+      <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">{label}</p>
+      <div className="mt-2 space-y-1">
+        {rows.map((row) => (
+          <div key={row.label} className="flex items-center justify-between gap-6 text-sm">
+            <span className="font-semibold text-slate-500">{row.label}</span>
+            <span className="font-black text-slate-900">{row.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const AccuracyTooltip = ({ active, payload, label }: { active?: boolean; payload?: Array<{ payload: Record<string, unknown> }>; label?: string }) => {
+  if (!active || !payload || !payload.length) return null;
+  const point = payload[0]?.payload;
+  if (!point) return null;
+
+  const rows: { label: string; value: string }[] = [
+    { label: 'Predicted', value: `TK ${Number(point.predicted).toLocaleString()}` },
+  ];
+  if (point.actual !== null && point.actual !== undefined) {
+    rows.push({ label: 'Actual', value: `TK ${Number(point.actual).toLocaleString()}` });
+    rows.push({ label: 'Error', value: `${point.errorPct}%` });
+  } else {
+    rows.push({ label: 'Actual', value: 'No spend recorded' });
+  }
 
   return (
     <div className="rounded-2xl border border-blue-100 bg-white px-4 py-3 shadow-[0_12px_40px_rgba(59,130,246,0.14)]">

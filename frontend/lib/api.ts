@@ -24,6 +24,7 @@ import {
   ExpenseGroupSummary,
   Forecast,
   ForecastContextResponse,
+  ForecastAccuracyResponse,
   ForecastRunResponse,
   ForecastSourceMode,
   ForensicRunResponse,
@@ -251,6 +252,7 @@ export const api = {
     if (options.dateTo) params.set('date_to', options.dateTo);
     return request<ForecastContextResponse>(`/budget/dept/${deptId}/forecast-context?${params.toString()}`);
   },
+  forecastAccuracy: (deptId: string) => request<ForecastAccuracyResponse>(`/budget/dept/${deptId}/forecast-accuracy`),
   runForensic: (deptId: string, month: number, year: number, uploadBatchId?: string | null) => request<ForensicRunResponse>('/forensic/analyze', {
     method: 'POST',
     body: JSON.stringify({ dept_id: deptId, month, year, upload_batch_id: uploadBatchId ?? null }),

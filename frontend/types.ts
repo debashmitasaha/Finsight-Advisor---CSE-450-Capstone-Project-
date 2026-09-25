@@ -44,6 +44,7 @@ export interface Department {
   transaction_count?: number;
   used_budget_current_year?: number;
   annual_budget_utilization_pct?: number;
+  budget_reference_date?: string;
 }
 
 export interface Transaction {
@@ -116,6 +117,7 @@ export interface Forecast {
   upper_bound: number;
   model_type: string | null;
   model_version: string | null;
+  source_mode?: string | null;
 }
 
 export type ForecastSourceMode = 'latest_batch' | 'full_history' | 'upload_batch' | 'date_range';
@@ -148,6 +150,21 @@ export interface ForecastContextResponse {
     model_version: string;
   } | null;
   forecasts: Forecast[];
+}
+
+export interface ForecastAccuracyEntry {
+  month: string;
+  predicted_amount: number;
+  actual_amount: number;
+  error_pct: number | null;
+  model_type: string | null;
+  source_mode: string | null;
+}
+
+export interface ForecastAccuracyResponse {
+  entries: ForecastAccuracyEntry[];
+  average_error_pct: number | null;
+  months_evaluated: number;
 }
 
 export interface UploadBatchSummary {
