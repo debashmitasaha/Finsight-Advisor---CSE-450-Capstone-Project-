@@ -23,6 +23,7 @@ import {
   Sparkles,
   Table,
   TrendingUp,
+  Trash2,
   Upload,
   WalletCards,
   X,
@@ -135,6 +136,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [blockingAction, setBlockingAction] = useState<{ title: string; detail: string } | null>(null);
   const [expenseGroupAction, setExpenseGroupAction] = useState<{ key: string; action: 'approve' | 'reject' } | null>(null);
   const [approvingAllExpenseGroups, setApprovingAllExpenseGroups] = useState(false);
+  const [deletingUploadBatchId, setDeletingUploadBatchId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [departmentLoading, setDepartmentLoading] = useState(false);
   const [transactionsLoading, setTransactionsLoading] = useState(false);
@@ -735,6 +737,53 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     }
   };
 
+  const handleDeleteUploadBatch = async (batch: UploadBatchSummary) => {
+    if (!selectedDeptId || deletingUploadBatchId) return;
+    const confirmed = window.confirm(
+      `Delete "${batch.source_file_name}" and its ${batch.transaction_count} saved transaction${batch.transaction_count === 1 ? '' : 's'}? Related forecasts and analysis results will also be cleared. This cannot be undone.`,
+    );
+    if (!confirmed) return;
+
+    setDeletingUploadBatchId(batch.upload_batch_id);
+    setStatus(`Deleting ${batch.source_file_name}...`);
+    try {
+      const result = await api.deleteUploadBatch(batch.upload_batch_id);
+      const deletedBatchWasSelected = selectedBatchId === batch.upload_batch_id;
+      const deletedForensicBatchWasSelected = selectedForensicBatchId === batch.upload_batch_id;
+
+      if (deletedBatchWasSelected) setSelectedBatchId('');
+      if (deletedForensicBatchWasSelected) setSelectedForensicBatchId('');
+      if (ledgerBatchFilter === batch.upload_batch_id) setLedgerBatchFilter('all');
+
+      setForecasts([]);
+      setForecastHistory([]);
+      setForecastDiagnostics(null);
+      setForecastModel(null);
+      setForecastAccuracy(null);
+      setForensicResult(null);
+      setSelectedAnomaly(null);
+      setSelectedExpenseGroup(null);
+      setLedgerPage(null);
+      setLedgerOffset(0);
+      setLedgerRefreshKey((current) => current + 1);
+
+      await Promise.all([
+        loadDepartmentData(selectedDeptId),
+        loadControlData(selectedDeptId),
+        loadForensicData(selectedDeptId, {
+          uploadBatchId: deletedForensicBatchWasSelected ? null : selectedForensicBatchId || null,
+        }),
+      ]);
+      setStatus(
+        `${result.source_file_name} deleted with ${result.transactions_deleted} transaction${result.transactions_deleted === 1 ? '' : 's'}.`,
+      );
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Unable to delete uploaded ledger.');
+    } finally {
+      setDeletingUploadBatchId(null);
+    }
+  };
+
   const handleViewExpenseGroupTransactions = (group: ExpenseGroupSummary) => {
     setSelectedExpenseGroup(group);
     setGroupTransactionOffset(0);
@@ -1265,11 +1314,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
                     <th className="px-5 py-4">Saved</th>
                     <th className="px-5 py-4">Date Range</th>
                     <th className="px-5 py-4">Status</th>
+                    <th className="px-5 py-4 text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody>
                   {controlDataLoading ? (
-                    <tr><td colSpan={6} className="px-5 py-6"><SkeletonLine className="h-5 w-full" /></td></tr>
+                    <tr><td colSpan={7} className="px-5 py-6"><SkeletonLine className="h-5 w-full" /></td></tr>
                   ) : uploadBatches.map((batch) => {
                     const duplicateOnly = batch.row_count > 0 && batch.transaction_count === 0;
                     return (
@@ -1286,12 +1336,28 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
                             {duplicateOnly ? 'Skipped duplicate upload' : batch.status.replaceAll('_', ' ')}
                           </span>
                         </td>
+                        <td className="px-5 py-4 text-right">
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteUploadBatch(batch)}
+                            disabled={deletingUploadBatchId !== null}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-black text-red-700 transition hover:border-red-300 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                            aria-label={`Delete uploaded ledger ${batch.source_file_name}`}
+                          >
+                            {deletingUploadBatchId === batch.upload_batch_id ? (
+                              <span className="h-4 w-4 animate-spin rounded-full border-2 border-red-300 border-t-red-700" />
+                            ) : (
+                              <Trash2 size={14} />
+                            )}
+                            {deletingUploadBatchId === batch.upload_batch_id ? 'Deleting...' : 'Delete'}
+                          </button>
+                        </td>
                       </tr>
                     );
                   })}
                   {!controlDataLoading && !uploadBatches.length && (
                     <tr>
-                      <td colSpan={6} className="px-5 py-10 text-center text-sm font-semibold text-slate-400">No uploaded ledger files yet.</td>
+                      <td colSpan={7} className="px-5 py-10 text-center text-sm font-semibold text-slate-400">No uploaded ledger files yet.</td>
                     </tr>
                   )}
                 </tbody>

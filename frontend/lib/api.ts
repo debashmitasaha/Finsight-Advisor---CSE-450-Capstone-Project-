@@ -104,6 +104,11 @@ export const api = {
     form.append('file', file);
     return request<UploadTransactionsResponse>('/transactions/upload', { method: 'POST', body: form });
   },
+  deleteUploadBatch: (uploadBatchId: string) =>
+    request<{ success: boolean; upload_batch_id: string; source_file_name: string; transactions_deleted: number }>(
+      `/transactions/upload-batches/${encodeURIComponent(uploadBatchId)}`,
+      { method: 'DELETE' },
+    ),
   transactions: (
     deptId: string,
     options: {

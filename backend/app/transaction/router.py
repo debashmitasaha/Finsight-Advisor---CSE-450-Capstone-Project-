@@ -13,8 +13,9 @@ from sqlalchemy.orm import Session
 
 from app.auth.router import get_current_user
 from app.database import get_db
-from app.models import Anomaly, Department, ExpenseCategory, Transaction, UploadBatch, User
+from app.models import AccessLog, Anomaly, Department, ExpenseCategory, Transaction, UploadBatch, User
 from app.necessity.service import clear_manual_review, recalculate_department, set_manual_review
+from app.services.ledger_deletion import delete_upload_batch_data
 from app.services.common import (
     CATEGORY_VALUES,
     clean_chart_account_head,
@@ -377,6 +378,43 @@ async def upload_transactions(
         duplicate_rows=duplicate_rows,
         failed_rows=failed_rows[:50],
     )
+
+
+@router.delete("/upload-batches/{upload_batch_id}")
+def delete_upload_batch(
+    upload_batch_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    batch = db.query(UploadBatch).filter(UploadBatch.upload_batch_id == upload_batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Uploaded ledger not found")
+    if not batch.department_id:
+        raise HTTPException(status_code=409, detail="Uploaded ledger is not attached to a department")
+
+    department = db.query(Department).filter(Department.department_id == batch.department_id).first()
+    if not department:
+        raise HTTPException(status_code=404, detail="Department not found")
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if current_user.company_id and str(department.company_id) != str(current_user.company_id):
+        raise HTTPException(status_code=403, detail="You cannot delete another company's ledger")
+
+    try:
+        result = delete_upload_batch_data(db, batch, department)
+        db.add(
+            AccessLog(
+                user_id=current_user.user_id,
+                dept_id=department.department_id,
+                transaction_id=None,
+                action=f"delete_upload_batch:{upload_batch_id}",
+            )
+        )
+        db.commit()
+        return result
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.get("/dept/{dept_id}/summary")
