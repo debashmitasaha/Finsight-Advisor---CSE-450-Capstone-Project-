@@ -190,10 +190,30 @@ def _boxcox_transform(series: pd.Series) -> tuple[pd.Series, float, float]:
     shift = 0.0
     if (series <= 0).any():
         shift = abs(float(series.min())) + 1.0
-    transformed, lam = boxcox(series.values + shift)
+    values = series.values + shift
+    _, raw_lam = boxcox(values)
+    # scipy's unconstrained MLE search can return a lambda so extreme that,
+    # for a series whose absolute scale dwarfs its proportional variance, the
+    # transform collapses to its asymptotic constant for every point -- e.g.
+    # lambda=-2.57 on values in the tens of thousands leaves only 13th-decimal
+    # floating-point noise distinguishing one month from another. SARIMA then
+    # fits that noise, and the (necessarily hypersensitive, this close to the
+    # inverse transform's domain boundary) forecast collapses toward zero the
+    # moment it drifts even slightly off the exact noise pattern it trained
+    # on. Clamping to the conventional range reduces how often this happens.
+    lam = float(np.clip(raw_lam, -2.0, 2.0))
+    transformed = boxcox(values, lmbda=lam)
+    # Clamping alone isn't enough -- even lambda=-2 vanishes toward the
+    # float64 precision floor once values reach the tens of thousands (y^-2
+    # for y=60,000 is ~2.8e-10). Detect an actually-collapsed transform and
+    # fall back to the log transform (lambda=0), which stays well-conditioned
+    # at any positive currency scale.
+    if float(np.std(transformed)) < 1e-6:
+        lam = 0.0
+        transformed = np.log(values)
     transformed_series = pd.Series(transformed, index=series.index, dtype=float)
     transformed_series.index.freq = "MS"
-    return transformed_series, float(lam), shift
+    return transformed_series, lam, shift
 
 
 def _inverse_boxcox(values: np.ndarray | pd.Series, lam: float, shift: float) -> np.ndarray:
