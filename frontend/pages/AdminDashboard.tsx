@@ -701,6 +701,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         setForecastHistory(result.history);
         setForecastDiagnostics(result.diagnostics);
         setForecastModel(result.model);
+        // used_budget_current_year / budget_reference_date live on the
+        // department record, not the forecast response -- refetch so the
+        // pace card (Used/Projected, the On Pace badge) isn't left showing
+        // whatever it saw at page load.
+        await loadBase();
         setStatus('Budget forecast updated successfully.');
         return;
       }
@@ -785,6 +790,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       await api.uploadTransactions(selectedDeptId, file);
       await loadDepartmentData(selectedDeptId);
       await loadControlData(selectedDeptId);
+      // New transactions can move used_budget_current_year and
+      // budget_reference_date, which only loadBase() refreshes.
+      await loadBase();
       setExpenseReviewTab('ledger');
       setLedgerOffset(0);
       setLedgerBatchFilter('all');
