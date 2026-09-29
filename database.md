@@ -270,21 +270,34 @@ parents[1]              = backend
 loaded file             = backend/.env
 ```
 
-### Step 2: Read `DATABASE_URL`
+### Step 2: Resolve the database URL
 
 ```python
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "sqlite:///./finsight_dev.db",
-)
+def resolve_database_url() -> str:
+    remote_url = os.getenv("DATABASE_URL", "").strip()
+    if remote_url:
+        return remote_url
+
+    local_url = os.getenv("LOCAL_DATABASE_URL", "").strip()
+    if local_url:
+        return local_url
+
+    sqlite_path = Path(__file__).resolve().parents[1] / "finsight_dev.db"
+    return f"sqlite:///{sqlite_path.as_posix()}"
+
+
+DATABASE_URL = resolve_database_url()
 ```
 
-The second value is the fallback. Therefore:
+Therefore:
 
 ```text
-DATABASE_URL is present  -> use the configured URL
-DATABASE_URL is absent   -> use sqlite:///./finsight_dev.db
+DATABASE_URL is non-empty        -> use the configured Supabase/PostgreSQL URL
+DATABASE_URL is absent or blank  -> use LOCAL_DATABASE_URL when configured
+both are absent or blank         -> use backend/finsight_dev.db
 ```
+
+The default path is absolute, so starting Uvicorn from the repository root or from `backend/` selects the same SQLite file.
 
 ### Step 3: Add SQLite-specific arguments
 
@@ -445,6 +458,14 @@ Create `backend/.env` locally:
 DATABASE_URL=postgresql+psycopg2://finsight_app:YOUR_PASSWORD@localhost:5432/finsight
 SQL_ECHO=False
 ```
+
+For local SQLite, delete `DATABASE_URL` or leave it blank:
+
+```dotenv
+DATABASE_URL=
+```
+
+No separate SQLite server or driver installation is needed. An optional `LOCAL_DATABASE_URL` can select a different local file.
 
 The explicit driver form is:
 

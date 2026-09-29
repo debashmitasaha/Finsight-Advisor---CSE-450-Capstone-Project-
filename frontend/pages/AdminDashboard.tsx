@@ -75,7 +75,7 @@ interface AdminDashboardProps {
 
 const shellCard = 'rounded-[32px] border border-slate-200/80 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.06)]';
 type ForensicMode = 'rule' | 'engine';
-type ExpenseReviewTab = 'ledger' | 'pending' | 'approved';
+type ExpenseReviewTab = 'ledger' | 'unassigned' | 'pending' | 'approved';
 const MAX_ANNUAL_BUDGET = 9_999_999_999_999.99;
 // Mirrors ONGOING_FORECAST_SCOPES in backend/app/budget/router.py.
 const ONGOING_FORECAST_SCOPES = ['latest_batch', 'full_history'];
@@ -675,7 +675,13 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     if (shouldBlock) setBlockingAction(blockingCopy[action]);
     setStatus(`Running ${action}...`);
     try {
-      if (action === 'group') await api.runGrouping(selectedDeptId);
+      if (action === 'group') {
+        await api.runGrouping(selectedDeptId);
+        setExpenseReviewTab('unassigned');
+        setLedgerOffset(0);
+        setLedgerRefreshKey((current) => current + 1);
+        await loadTransactionsData(selectedDeptId, 100);
+      }
       if (action === 'categorize') await api.runCategorization(selectedDeptId);
       if (action === 'expense') {
         const result = await api.runExpenseCategorization(selectedDeptId);
@@ -953,6 +959,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const categorizedTotal = Number(categorizationSummary?.necessary || 0) + Number(categorizationSummary?.unnecessary || 0);
   const categorizationCoverage = transactionCount > 0 ? Math.round((categorizedTotal / transactionCount) * 100) : 0;
   const pendingExpenseReviews = expenseGroups.filter((group) => group.expense_category_status === 'pending_review').length;
+  const unassignedExpenseGroups = useMemo(
+    () => expenseGroups.filter((group) => group.expense_category_status === 'unassigned'),
+    [expenseGroups],
+  );
   const pendingExpenseGroups = useMemo(
     () => expenseGroups.filter((group) => group.expense_category_status === 'pending_review'),
     [expenseGroups],
@@ -961,7 +971,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     () => expenseGroups.filter((group) => group.expense_category_status === 'approved'),
     [expenseGroups],
   );
-  const visibleExpenseGroups = expenseReviewTab === 'pending' ? pendingExpenseGroups : approvedExpenseGroups;
+  const visibleExpenseGroups = expenseReviewTab === 'unassigned'
+    ? unassignedExpenseGroups
+    : expenseReviewTab === 'pending'
+      ? pendingExpenseGroups
+      : approvedExpenseGroups;
   const ledgerBatchesWithTransactions = uploadBatches.filter((batch) => batch.transaction_count > 0);
   const duplicateOnlyBatches = uploadBatches.filter((batch) => batch.row_count > 0 && batch.transaction_count === 0);
   const ledgerRows = ledgerPage?.items || [];
@@ -1114,9 +1128,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const expenseCategoryReview = (
     <div className={`${shellCard} p-7`}>
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <SectionKicker title="Gemini Suggestions Approval" subtitle="Review pending suggestions and approved categorization decisions." />
-        <div className="grid grid-cols-3 gap-3 text-right">
+        <SectionKicker title="Group & Expense Category Review" subtitle="Inspect generated groups, then review Gemini suggestions and approved decisions." />
+        <div className="grid grid-cols-2 gap-3 text-right lg:grid-cols-4">
           <DataPill label="Groups" value={expenseGroups.length} isLoading={controlDataLoading} />
+          <DataPill label="Unassigned" value={unassignedExpenseGroups.length} isLoading={controlDataLoading} />
           <DataPill label="Pending" value={pendingExpenseGroups.length} isLoading={controlDataLoading} />
           <DataPill label="Approved" value={approvedExpenseGroups.length} isLoading={controlDataLoading} />
         </div>
@@ -1125,6 +1140,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       <div className="mt-6 inline-flex rounded-2xl border border-slate-200 bg-slate-50 p-1">
         {[
           { id: 'ledger' as const, label: 'Uploaded Ledger', count: uploadBatches.length },
+          { id: 'unassigned' as const, label: 'Unassigned Groups', count: unassignedExpenseGroups.length },
           { id: 'pending' as const, label: 'Pending Approval', count: pendingExpenseGroups.length },
           { id: 'approved' as const, label: 'Approved', count: approvedExpenseGroups.length },
         ].map((tab) => (
@@ -1292,7 +1308,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
             <tr className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">
               <th className="px-5 py-4">Group</th>
               <th className="px-5 py-4">Samples</th>
-              <th className="px-5 py-4">{expenseReviewTab === 'pending' ? 'Gemini Suggestion' : 'Approved Category'}</th>
+              <th className="px-5 py-4">
+                {expenseReviewTab === 'pending' ? 'Gemini Suggestion' : expenseReviewTab === 'approved' ? 'Approved Category' : 'Expense Category'}
+              </th>
               {expenseReviewTab === 'pending' && <th className="px-5 py-4">Approve As</th>}
               <th className="px-5 py-4">{expenseReviewTab === 'pending' ? 'Action' : 'Status'}</th>
             </tr>
@@ -1393,8 +1411,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
                         </button>
                       </div>
                     ) : (
-                      <span className="inline-flex rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-emerald-700">
-                        Approved
+                      <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-black uppercase tracking-[0.12em] ${expenseStatusClass(group.expense_category_status)}`}>
+                        {group.expense_category_status.replaceAll('_', ' ')}
                       </span>
                     )}
                   </td>
@@ -1406,12 +1424,18 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         {!controlDataLoading && !visibleExpenseGroups.length && (
           <div className="p-8 text-center">
             <p className="font-black text-slate-950">
-              {expenseReviewTab === 'pending' ? 'No pending approvals' : 'No approved suggestions yet'}
+              {expenseReviewTab === 'unassigned'
+                ? 'No unassigned groups'
+                : expenseReviewTab === 'pending'
+                  ? 'No pending approvals'
+                  : 'No approved suggestions yet'}
             </p>
             <p className="mt-2 text-sm font-semibold text-slate-500">
-              {expenseReviewTab === 'pending'
-                ? 'Run expense category suggestions to create pending decisions.'
-                : 'Approved Gemini categorization decisions will appear here.'}
+              {expenseReviewTab === 'unassigned'
+                ? 'Run grouping to generate transaction groups.'
+                : expenseReviewTab === 'pending'
+                  ? 'Run expense category suggestions to create pending decisions.'
+                  : 'Approved Gemini categorization decisions will appear here.'}
             </p>
           </div>
         )}

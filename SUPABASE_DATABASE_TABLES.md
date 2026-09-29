@@ -39,6 +39,7 @@ Stores companies/organizations that own departments and users.
 |---|---:|---|
 | `company_id` | `uuid` | Primary key. Unique company identifier generated with `gen_random_uuid()`. |
 | `company_name` | `text` | Display name of the company. Used in admin company management. |
+| `is_active` | `boolean` | Whether the company is enabled. Disabling it also deactivates its associated user accounts. |
 | `dept_id` | `uuid` | Legacy/default department reference. Points to `department.department_id`; nullable. |
 
 Relationships:

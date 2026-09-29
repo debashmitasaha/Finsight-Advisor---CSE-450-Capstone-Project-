@@ -30,8 +30,9 @@ export interface Company {
   company_name: string;
   department_count?: number;
   user_count?: number;
-  is_active?: boolean;
+  is_active: boolean;
   purchase_date?: string | null;
+  affected_user_count?: number;
 }
 
 export interface Department {

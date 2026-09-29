@@ -82,6 +82,7 @@ class Company(Base):
 
     company_id: Mapped[str] = mapped_column(UUIDString(), primary_key=True, default=new_id)
     company_name: Mapped[str] = mapped_column(Text, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
     dept_id: Mapped[str | None] = mapped_column(ForeignKey("department.department_id", ondelete="SET NULL"), nullable=True)
 
     legacy_department: Mapped[Department | None] = relationship("Department", foreign_keys=[dept_id])

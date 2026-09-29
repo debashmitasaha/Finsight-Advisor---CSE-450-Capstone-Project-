@@ -12,6 +12,7 @@ create table if not exists public.department (
 create table if not exists public.company (
   company_id uuid primary key default gen_random_uuid(),
   company_name text not null,
+  is_active boolean not null default true,
   dept_id uuid references public.department(department_id) on delete set null
 );
 

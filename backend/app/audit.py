@@ -53,6 +53,8 @@ ACTION_LABELS: list[tuple[str, str, str]] = [
     ("DELETE", r"^/forensic-engine/review", "Withdrew a review verdict"),
     ("PUT", r"^/forensic-engine/calibration-settings", "Changed calibration settings"),
     ("POST", r"^/admin/companies", "Created a company"),
+    ("PATCH", r"^/admin/companies/[^/]+/status$", "Changed a company's status"),
+    ("PATCH", r"^/admin/companies/[^/]+$", "Edited a company"),
     ("POST", r"^/admin/departments", "Created a department"),
     ("PUT", r"^/admin/departments", "Updated a department"),
     ("POST", r"^/admin/users", "Created a user"),
