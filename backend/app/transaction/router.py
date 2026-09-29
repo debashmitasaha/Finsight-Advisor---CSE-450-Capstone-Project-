@@ -14,11 +14,13 @@ from sqlalchemy.orm import Session
 from app.auth.router import get_current_user
 from app.database import get_db
 from app.models import Anomaly, Department, ExpenseCategory, Transaction, UploadBatch, User
+from app.necessity.service import clear_manual_review, recalculate_department, set_manual_review
 from app.services.common import (
     CATEGORY_VALUES,
     clean_chart_account_head,
     ensure_dataframe_columns,
     normalize_bool,
+    serialize_id,
 )
 from app.services.dataframe import read_uploaded_file, resolve_amount_and_type
 
@@ -40,6 +42,13 @@ class TransactionResponse(BaseModel):
     expense_category_id: Optional[str]
     expense_category_name: Optional[str]
     semantic_confidence: Optional[float]
+    necessity_score: float
+    necessity_confidence: float
+    necessity_source: str
+    necessity_reason: Optional[dict]
+    necessity_locked: bool
+    necessity_reviewed_by: Optional[str]
+    necessity_reviewed_at: Optional[str]
     payment_method: Optional[str]
     invoice_id: Optional[str]
     voucher_number: Optional[str]
@@ -173,6 +182,13 @@ def serialize_transaction(txn: Transaction) -> TransactionResponse:
         expense_category_id=txn.expense_category_id,
         expense_category_name=txn.expense_category.name if txn.expense_category else None,
         semantic_confidence=float(txn.semantic_confidence) if txn.semantic_confidence is not None else None,
+        necessity_score=float(txn.necessity_score if txn.necessity_score is not None else 0.5),
+        necessity_confidence=float(txn.necessity_confidence if txn.necessity_confidence is not None else 0),
+        necessity_source=txn.necessity_source or "unreviewed",
+        necessity_reason=txn.necessity_reason,
+        necessity_locked=bool(txn.necessity_locked),
+        necessity_reviewed_by=serialize_id(txn.necessity_reviewed_by),
+        necessity_reviewed_at=txn.necessity_reviewed_at.isoformat() if txn.necessity_reviewed_at else None,
         payment_method=txn.payment_method,
         invoice_id=txn.invoice_id,
         voucher_number=txn.voucher_number,
@@ -554,9 +570,23 @@ def update_transaction(
         raise HTTPException(status_code=404, detail="Transaction not found")
 
     if payload.category is not None:
+        if not current_user.is_admin:
+            raise HTTPException(status_code=403, detail="Admin access required to review necessity")
         if payload.category not in CATEGORY_VALUES:
             raise HTTPException(status_code=400, detail="Invalid category")
-        txn.category = payload.category
+        department = txn.department
+        if current_user.company_id and (
+            not department or str(department.company_id) != str(current_user.company_id)
+        ):
+            raise HTTPException(status_code=403, detail="You cannot review another company's transaction")
+        if payload.category == "uncategorized":
+            clear_manual_review(txn)
+        else:
+            set_manual_review(txn, payload.category, str(current_user.user_id))
+        db.flush()
+        if txn.department_id:
+            # The new review is evidence for every unlocked row in its group.
+            recalculate_department(db, txn.department_id)
     if payload.approval_status is not None:
         txn.approval_status = payload.approval_status.lower()
     if payload.is_flagged is not None:

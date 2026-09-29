@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from collections import Counter
 import json
 import os
 import re
 import urllib.error
 import urllib.request
 
-import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, or_
@@ -15,14 +13,15 @@ from sqlalchemy.orm import Session
 
 from app.auth.router import get_current_user
 from app.database import get_db
-from app.grouping.grouping_sbert import encode_texts
 from app.models import Department, ExpenseCategory, Group, Transaction, User
+from app.necessity.service import recalculate_department
 from app.services.common import clean_chart_account_head, serialize_id
 
 router = APIRouter(prefix="/categorization", tags=["Categorization"])
 
 INITIAL_EXPENSE_CATEGORIES = [
-    ("Remuneration", "Salary, wages, payroll, bonuses, allowances, and staff compensation."),
+    ("Remuneration", "Salary, wages, payroll, bonuses, "),
+    ("allowance", "allowances, and staff compensation."),
     ("Transportation Cost", "Vehicle, freight, travel, logistics, and transport-related expenditure."),
     ("Fuel", "Diesel, octane, petrol, generator fuel, and other fuel purchases."),
     ("Maintenance", "Repair, servicing, replacement parts, and routine maintenance work."),
@@ -48,6 +47,16 @@ class ExpenseGroupApprovalRequest(BaseModel):
     group_no: float | None = None
     chart_acc_head_name: str | None = None
     category_name: str | None = None
+
+
+class ExpenseGroupBulkApprovalItem(BaseModel):
+    chart_acc_head_name: str
+    category_name: str
+
+
+class ExpenseGroupBulkApprovalRequest(BaseModel):
+    dept_id: str
+    approvals: list[ExpenseGroupBulkApprovalItem]
 
 
 class ExpenseGroupRejectionRequest(BaseModel):
@@ -364,54 +373,16 @@ def group_identifier(group: Group) -> str:
 @router.post("/predict")
 def categorize_transactions(payload: CategorizeRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     department = get_department(db, payload.dept_id)
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if current_user.company_id and str(department.company_id) != str(current_user.company_id):
+        raise HTTPException(status_code=403, detail="You cannot score another company's department")
 
-    transactions = db.query(Transaction).filter(Transaction.department_id == payload.dept_id).all()
-    if not transactions:
-        return {"success": True, "categorized_count": 0, "necessary_count": 0, "unnecessary_count": 0, "uncategorized_count": 0}
-
-    frequencies = Counter([txn.group_name or txn.cleaned_chart_acc_head or "ungrouped" for txn in transactions])
-    texts = [f"{txn.description or ''} {txn.cleaned_chart_acc_head or txn.chart_acc_head or ''}".strip() for txn in transactions]
-    embeddings = encode_texts(texts)
-
-    necessary = 0
-    unnecessary = 0
-    uncategorized = 0
-    categorized_count = 0
-
-    for txn, embedding in zip(transactions, embeddings):
-        group_key = txn.group_name or txn.cleaned_chart_acc_head or "ungrouped"
-        freq = frequencies[group_key]
-        amount = float(txn.amount)
-        semantic_score = float(np.mean(np.abs(embedding))) if embedding.size else 0.0
-
-        predicted = "necessary"
-        if freq <= 2 and amount > 0:
-            predicted = "unnecessary"
-        if amount < 100 and freq > 2:
-            predicted = "necessary"
-        if not txn.description and not txn.chart_acc_head:
-            predicted = "uncategorized"
-
-        if freq <= 2 and predicted != "necessary":
-            predicted = "unnecessary"
-
-        txn.category = predicted
-        txn.semantic_confidence = min(0.99, max(0.15, semantic_score))
-        categorized_count += 1
-        if predicted == "necessary":
-            necessary += 1
-        elif predicted == "unnecessary":
-            unnecessary += 1
-        else:
-            uncategorized += 1
-
+    summary = recalculate_department(db, payload.dept_id)
     db.commit()
     return {
         "success": True,
-        "categorized_count": categorized_count,
-        "necessary_count": necessary,
-        "unnecessary_count": unnecessary,
-        "uncategorized_count": uncategorized,
+        **summary,
     }
 
 
@@ -590,6 +561,103 @@ def approve_expense_category_group(
     db.commit()
     db.refresh(group)
     return {"success": True, "category": serialize_expense_category(category), "group": serialize_expense_group(db, group)}
+
+
+@router.post("/expense-groups/approve-all")
+def approve_all_expense_category_groups(
+    payload: ExpenseGroupBulkApprovalRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    department = get_department(db, payload.dept_id)
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if current_user.company_id and str(department.company_id) != str(current_user.company_id):
+        raise HTTPException(status_code=403, detail="You cannot approve categories for another company's department")
+
+    pending_groups = (
+        db.query(Group)
+        .filter(
+            Group.dept_id == payload.dept_id,
+            Group.expense_category_status == "pending_review",
+        )
+        .order_by(Group.group_no.asc())
+        .all()
+    )
+    if not pending_groups:
+        raise HTTPException(status_code=400, detail="There are no pending expense categories to approve")
+
+    approvals_by_group: dict[str, ExpenseGroupBulkApprovalItem] = {}
+    for approval in payload.approvals:
+        group_key = str(approval.chart_acc_head_name or "").strip()
+        if not group_key:
+            raise HTTPException(status_code=400, detail="Every approval must identify a group")
+        if group_key in approvals_by_group:
+            raise HTTPException(status_code=400, detail=f"Duplicate approval for group: {group_key}")
+        if not str(approval.category_name or "").strip():
+            raise HTTPException(status_code=400, detail=f"Choose a category for group: {group_key}")
+        approvals_by_group[group_key] = approval
+
+    pending_by_group = {group.chart_acc_head_name: group for group in pending_groups}
+    missing_groups = sorted(set(pending_by_group) - set(approvals_by_group))
+    unknown_groups = sorted(set(approvals_by_group) - set(pending_by_group))
+    if missing_groups or unknown_groups:
+        detail_parts = []
+        if missing_groups:
+            detail_parts.append(f"missing {len(missing_groups)} pending group(s)")
+        if unknown_groups:
+            detail_parts.append(f"includes {len(unknown_groups)} group(s) that are not pending")
+        raise HTTPException(
+            status_code=409,
+            detail="Approval list is out of date: " + " and ".join(detail_parts) + ". Refresh and try again.",
+        )
+
+    categories_by_key = {category.category_key: category for category in scoped_categories(db, department)}
+    approved_groups: list[Group] = []
+    used_categories: dict[str, ExpenseCategory] = {}
+
+    try:
+        for group in pending_groups:
+            approval = approvals_by_group[group.chart_acc_head_name]
+            category_name = category_display_name(approval.category_name)
+            key = category_key(category_name)
+            category = categories_by_key.get(key)
+            if not category:
+                category = ExpenseCategory(
+                    company_id=department.company_id,
+                    department_id=None,
+                    name=category_name,
+                    category_key=key,
+                    description=f"AI-suggested category approved from {group.group_name or group.chart_acc_head_name}.",
+                    is_system=False,
+                    is_active=True,
+                    created_by=current_user.user_id,
+                )
+                db.add(category)
+                db.flush()
+                categories_by_key[key] = category
+
+            group.expense_category_id = category.category_id
+            group.expense_category_status = "approved"
+            group.suggested_category_name = category.name
+            group.suggested_category_is_new = False
+            for txn in transactions_for_group(db, group):
+                txn.expense_category_id = category.category_id
+
+            approved_groups.append(group)
+            used_categories[key] = category
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return {
+        "success": True,
+        "approved_count": len(approved_groups),
+        "categories": [serialize_expense_category(category) for category in used_categories.values()],
+        "groups": [serialize_expense_group(db, group) for group in approved_groups],
+    }
 
 
 @router.post("/expense-groups/reject")

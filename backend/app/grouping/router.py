@@ -12,6 +12,7 @@ from app.auth.router import get_current_user
 from app.database import get_db
 from app.grouping.grouping_sbert import cosine_similarity, encode_texts
 from app.models import Department, Group, Transaction, User
+from app.necessity.service import recalculate_department
 from app.services.common import clean_chart_account_head
 
 router = APIRouter(prefix="/grouping", tags=["Grouping"])
@@ -43,6 +44,13 @@ def assign_transaction_groups(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    department = db.query(Department).filter(Department.department_id == payload.dept_id).first()
+    if not department:
+        raise HTTPException(status_code=404, detail="Department not found")
+    if current_user.company_id and str(department.company_id) != str(current_user.company_id):
+        raise HTTPException(status_code=403, detail="You cannot group another company's department")
     return assign_groups_for_department(db, payload.dept_id, payload.similarity_threshold)
 
 
@@ -198,6 +206,9 @@ def assign_groups_for_department(
         groups_assigned += 1
         new_groups_created += 1
 
+    # Group membership is the boundary for necessity evidence. Refresh every
+    # unlocked score now while preserving locked manual reviews.
+    recalculate_department(db, dept_id)
     db.commit()
     return AssignGroupsResponse(success=True, groups_assigned=groups_assigned, new_groups_created=new_groups_created)
 

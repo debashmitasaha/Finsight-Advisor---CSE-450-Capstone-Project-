@@ -1,8 +1,9 @@
 import React, { useMemo, useState } from 'react';
-import { AlertTriangle, Check, Loader2, Search } from 'lucide-react';
+import { AlertTriangle, Check, Loader2, LockKeyhole, Search } from 'lucide-react';
 import { api } from '../lib/api';
 import { Transaction, TransactionCategory } from '../types';
 import { InfoDot, Tip } from './ForensicKit';
+import { SHOW_NECESSITY_FEATURE } from '../constants';
 
 /* ---------------------------------------------------------------------------
    The ledger, with the things a reviewer actually needs.
@@ -21,10 +22,10 @@ const CATEGORY_STYLE: Record<string, string> = {
   uncategorized: 'border-slate-200 bg-slate-50 text-slate-600',
 };
 
-const CATEGORIES: { value: TransactionCategory; label: string; meaning: string }[] = [
+const CATEGORIES: { value: TransactionCategory; label: string; actionLabel?: string; meaning: string }[] = [
   { value: 'necessary', label: 'Necessary', meaning: 'Spending the department had to make.' },
   { value: 'unnecessary', label: 'Unnecessary', meaning: 'Spending that could have been avoided.' },
-  { value: 'uncategorized', label: 'Uncategorized', meaning: 'Not judged yet. The default for a fresh upload.' },
+  { value: 'uncategorized', label: 'Uncategorized', actionLabel: 'Clear', meaning: 'Clear a manual review and recalculate from the remaining reviewed transactions.' },
 ];
 
 const PAGE = 40;
@@ -32,7 +33,7 @@ const PAGE = 40;
 const LedgerHistory: React.FC<{
   transactions: Transaction[];
   loading: boolean;
-  onUpdated: (transaction: Transaction) => void;
+  onUpdated: (transaction: Transaction) => void | Promise<void>;
 }> = ({ transactions, loading, onUpdated }) => {
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState<TransactionCategory | 'all'>('all');
@@ -54,11 +55,12 @@ const LedgerHistory: React.FC<{
   }, [transactions, search, category, flaggedOnly]);
 
   const setRowCategory = async (transaction: Transaction, next: TransactionCategory) => {
-    if ((transaction.category || 'uncategorized') === next) return;
+    if ((transaction.category || 'uncategorized') === next && transaction.necessity_locked) return;
     setSavingId(transaction.transaction_id);
     setError(null);
     try {
-      onUpdated(await api.updateTransaction(transaction.transaction_id, { category: next }));
+      const updated = await api.updateTransaction(transaction.transaction_id, { category: next });
+      await onUpdated(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not update that row');
     } finally {
@@ -81,12 +83,11 @@ const LedgerHistory: React.FC<{
           <p className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">Operational history</p>
           <h1 className="mt-2 flex items-center gap-2 text-3xl font-black tracking-[-0.04em] text-slate-950">
             The ledger
-            <InfoDot text="Everything imported for this department. Search it, narrow it, and correct a necessity judgement in place." />
+            <InfoDot text="Everything imported for this department. Search it and narrow it using the available filters." />
           </h1>
           <p className="mt-2 text-sm text-slate-500">
             {filtered.length.toLocaleString()} of {transactions.length.toLocaleString()} rows
             {counts.flagged > 0 && ` · ${counts.flagged} flagged`}
-            {counts.uncategorized > 0 && ` · ${counts.uncategorized} not judged`}
           </p>
         </div>
         <label className="relative w-full max-w-xs">
@@ -105,7 +106,7 @@ const LedgerHistory: React.FC<{
 
       <div className="flex flex-wrap items-center gap-2">
         <FilterChip active={category === 'all'} onClick={() => setCategory('all')} label={`All ${transactions.length}`} />
-        {CATEGORIES.map((option) => (
+        {SHOW_NECESSITY_FEATURE && CATEGORIES.map((option) => (
           <Tip key={option.value} text={option.meaning}>
             <FilterChip
               active={category === option.value}
@@ -135,23 +136,25 @@ const LedgerHistory: React.FC<{
                 <th className="px-4 py-4">Amount</th>
                 <th className="px-4 py-4">Group</th>
                 <th className="px-4 py-4">Expense type</th>
-                <th className="px-7 py-4">
-                  <span className="inline-flex items-center gap-1.5">
-                    Necessity
-                    <InfoDot text="Click a row's necessity to correct it. The change is saved immediately and shows up in the audit trail." side="right" />
-                  </span>
-                </th>
+                {SHOW_NECESSITY_FEATURE && (
+                  <th className="px-7 py-4">
+                    <span className="inline-flex items-center gap-1.5">
+                      Necessity
+                      <InfoDot text="Score is the estimated necessity; confidence is the strength of reviewed evidence." side="right" />
+                    </span>
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={6} className="px-7 py-16 text-center text-sm text-slate-400">Loading the ledger…</td>
+                  <td colSpan={SHOW_NECESSITY_FEATURE ? 6 : 5} className="px-7 py-16 text-center text-sm text-slate-400">Loading the ledger…</td>
                 </tr>
               )}
               {!loading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-7 py-16 text-center text-sm text-slate-400">
+                  <td colSpan={SHOW_NECESSITY_FEATURE ? 6 : 5} className="px-7 py-16 text-center text-sm text-slate-400">
                     Nothing matches. Clear the search or the filters.
                   </td>
                 </tr>
@@ -184,27 +187,47 @@ const LedgerHistory: React.FC<{
                           {transaction.expense_category_name || 'Unassigned'}
                         </span>
                       </td>
-                      <td className="px-7 py-4">
-                        <div className="flex items-center gap-1.5">
-                          {CATEGORIES.map((option) => (
-                            <button
-                              key={option.value}
-                              onClick={() => setRowCategory(transaction, option.value)}
-                              disabled={saving}
-                              title={option.meaning}
-                              className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wider transition disabled:opacity-40 ${
-                                current === option.value
-                                  ? CATEGORY_STYLE[option.value]
-                                  : 'border-transparent text-slate-300 hover:border-slate-200 hover:text-slate-600'
-                              }`}
-                            >
-                              {current === option.value && !saving && <Check className="mr-1 inline h-3 w-3" />}
-                              {saving && current === option.value && <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />}
-                              {option.label.slice(0, 3)}
-                            </button>
-                          ))}
+                      {SHOW_NECESSITY_FEATURE && (
+                        <td className="px-7 py-4">
+                        <div className="min-w-[260px]">
+                          <div className="flex items-center gap-1.5">
+                            {CATEGORIES.map((option) => (
+                              <button
+                                key={option.value}
+                                onClick={() => setRowCategory(transaction, option.value)}
+                                disabled={saving}
+                                title={option.meaning}
+                                className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wider transition disabled:opacity-40 ${
+                                  current === option.value
+                                    ? CATEGORY_STYLE[option.value]
+                                    : 'border-transparent text-slate-300 hover:border-slate-200 hover:text-slate-600'
+                                }`}
+                              >
+                                {current === option.value && !saving && <Check className="mr-1 inline h-3 w-3" />}
+                                {saving && current === option.value && <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />}
+                                {option.actionLabel || option.label}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-semibold text-slate-500">
+                            <span>Score {Math.round(transaction.necessity_score * 100)}%</span>
+                            <span>Confidence {Math.round(transaction.necessity_confidence * 100)}%</span>
+                            {transaction.necessity_locked && (
+                              <span className="inline-flex items-center gap-1 text-blue-600">
+                                <LockKeyhole className="h-3 w-3" />
+                                Admin reviewed
+                              </span>
+                            )}
+                          </div>
+                          <p
+                            className="mt-1 max-w-sm truncate text-[11px] text-slate-400"
+                            title={String(transaction.necessity_reason?.summary || 'No reviewed evidence is available.')}
+                          >
+                            {String(transaction.necessity_reason?.summary || 'No reviewed evidence is available.')}
+                          </p>
                         </div>
-                      </td>
+                        </td>
+                      )}
                     </tr>
                   );
                 })}

@@ -66,7 +66,7 @@ import {
   UploadBatchSummary,
   UserAccount,
 } from '../types';
-import { COLORS } from '../constants';
+import { COLORS, SHOW_NECESSITY_FEATURE } from '../constants';
 
 interface AdminDashboardProps {
   user: UserAccount;
@@ -134,6 +134,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [status, setStatus] = useState<string | null>(null);
   const [blockingAction, setBlockingAction] = useState<{ title: string; detail: string } | null>(null);
   const [expenseGroupAction, setExpenseGroupAction] = useState<{ key: string; action: 'approve' | 'reject' } | null>(null);
+  const [approvingAllExpenseGroups, setApprovingAllExpenseGroups] = useState(false);
   const [loading, setLoading] = useState(true);
   const [departmentLoading, setDepartmentLoading] = useState(false);
   const [transactionsLoading, setTransactionsLoading] = useState(false);
@@ -682,7 +683,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         setLedgerRefreshKey((current) => current + 1);
         await loadTransactionsData(selectedDeptId, 100);
       }
-      if (action === 'categorize') await api.runCategorization(selectedDeptId);
+      if (action === 'categorize') {
+        await api.runCategorization(selectedDeptId);
+        setLedgerOffset(0);
+        setLedgerRefreshKey((current) => current + 1);
+        await loadTransactionsData(selectedDeptId, 100);
+      }
       if (action === 'expense') {
         const result = await api.runExpenseCategorization(selectedDeptId);
         setExpenseGroups(result.groups);
@@ -776,6 +782,44 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       setStatus(error instanceof Error ? error.message : 'Unable to reject expense category suggestion.');
     } finally {
       setExpenseGroupAction(null);
+    }
+  };
+
+  const handleApproveAllExpenseGroups = async () => {
+    if (!selectedDeptId || !pendingExpenseGroups.length) return;
+
+    const approvals = pendingExpenseGroups.map((group) => {
+      const key = expenseGroupKey(group);
+      return {
+        chart_acc_head_name: group.chart_acc_head_name,
+        category_name: categoryDrafts[key] ?? group.suggested_category_name ?? group.expense_category_name ?? '',
+      };
+    });
+    const missingCategoryCount = approvals.filter((approval) => !approval.category_name.trim()).length;
+    if (missingCategoryCount) {
+      setStatus(`Choose a category for all pending groups first (${missingCategoryCount} remaining).`);
+      return;
+    }
+
+    setStatus(`Approving ${approvals.length} expense categories...`);
+    setApprovingAllExpenseGroups(true);
+    try {
+      const result = await api.approveAllExpenseGroups({ dept_id: selectedDeptId, approvals });
+      const approvedKeys = new Set(pendingExpenseGroups.map(expenseGroupKey));
+      setCategoryDrafts((current) => Object.fromEntries(
+        Object.entries(current).filter(([key]) => !approvedKeys.has(key)),
+      ));
+      setLedgerOffset(0);
+      setLedgerRefreshKey((current) => current + 1);
+      await Promise.all([
+        loadDepartmentData(selectedDeptId),
+        loadControlData(selectedDeptId),
+      ]);
+      setStatus(`${result.approved_count} expense categories approved.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Unable to approve all expense categories.');
+    } finally {
+      setApprovingAllExpenseGroups(false);
     }
   };
 
@@ -990,11 +1034,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
       value: hasGroups ? `${Number(groupingStats?.total_groups || 0).toLocaleString()} groups` : 'Not run',
       state: hasGroups ? 'ready' : 'missing',
     },
-    {
+    ...(SHOW_NECESSITY_FEATURE ? [{
       label: 'Categorization',
       value: categorizationCoverage ? `${categorizationCoverage}% covered` : 'Not run',
-      state: categorizationCoverage >= 80 ? 'ready' : categorizationCoverage > 0 ? 'warning' : 'missing',
-    },
+      state: categorizationCoverage >= 80 ? 'ready' as const : categorizationCoverage > 0 ? 'warning' as const : 'missing' as const,
+    }] : []),
     {
       label: 'Forecast',
       value: forecastReady ? `${forecasts.length} entries` : 'Pending',
@@ -1085,7 +1129,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
             <DataPill label="Selected" value={selectedDepartment?.department_name || 'None'} isLoading={departmentLoading} />
             <DataPill label="Latest Entry" value={latestTransactionLabel} isLoading={departmentLoading} />
             <DataPill label="Budget Used" value={`${budgetUtilization.toFixed(1)}%`} isLoading={departmentLoading} />
-            <DataPill label="Uncategorized" value={categorizationSummary?.uncategorized || 0} isLoading={departmentLoading} />
+            {SHOW_NECESSITY_FEATURE && (
+              <DataPill label="Uncategorized" value={categorizationSummary?.uncategorized || 0} isLoading={departmentLoading} />
+            )}
           </div>
         </div>
       </div>
@@ -1146,6 +1192,26 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
           </button>
         ))}
       </div>
+
+      {expenseReviewTab === 'pending' && pendingExpenseGroups.length > 0 && (
+        <div className="mt-5 flex flex-col gap-4 rounded-[26px] border border-blue-100 bg-blue-50/70 p-5 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="font-black text-slate-950">Approve all pending groups</p>
+            <p className="mt-1 text-sm font-semibold text-slate-500">
+              Uses the category currently selected in each row for this department.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleApproveAllExpenseGroups}
+            disabled={approvingAllExpenseGroups || expenseGroupAction !== null || controlDataLoading}
+            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-blue-600 px-5 py-3 text-sm font-black text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+          >
+            {approvingAllExpenseGroups ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" /> : <CheckCircle2 size={17} />}
+            {approvingAllExpenseGroups ? 'Approving all...' : `Approve all (${pendingExpenseGroups.length})`}
+          </button>
+        </div>
+      )}
 
       {expenseReviewTab === 'ledger' ? (
         <div className="mt-5 space-y-5">
@@ -1234,13 +1300,13 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
                   <th className="px-5 py-4">Amount</th>
                   <th className="px-5 py-4">Group</th>
                   <th className="px-5 py-4">Expense Type</th>
-                  <th className="px-5 py-4">Necessity</th>
+                  {SHOW_NECESSITY_FEATURE && <th className="px-5 py-4">Necessity</th>}
                   <th className="px-5 py-4">Source File</th>
                 </tr>
               </thead>
               <tbody>
                 {ledgerLoading ? (
-                  <tr><td colSpan={7} className="px-5 py-8"><SkeletonLine className="h-5 w-full" /></td></tr>
+                  <tr><td colSpan={SHOW_NECESSITY_FEATURE ? 7 : 6} className="px-5 py-8"><SkeletonLine className="h-5 w-full" /></td></tr>
                 ) : ledgerRows.map((transaction) => (
                   <tr key={transaction.transaction_id} className="border-t border-slate-100 text-sm text-slate-700">
                     <td className="px-5 py-4 font-semibold">{formatDate(transaction.transaction_date)}</td>
@@ -1251,17 +1317,19 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
                     <td className="px-5 py-4 font-bold">TK {Number(transaction.amount || 0).toLocaleString()}</td>
                     <td className="px-5 py-4">{transaction.group_name || 'Not grouped'}</td>
                     <td className="px-5 py-4">{transaction.expense_category_name || 'Unassigned'}</td>
-                    <td className="px-5 py-4">
-                      <span className={`rounded-full px-3 py-1 text-xs font-bold border ${COLORS[transaction.category || 'uncategorized'] || COLORS.uncategorized}`}>
-                        {transaction.category || 'uncategorized'}
-                      </span>
-                    </td>
+                    {SHOW_NECESSITY_FEATURE && (
+                      <td className="px-5 py-4">
+                        <span className={`rounded-full px-3 py-1 text-xs font-bold border ${COLORS[transaction.category || 'uncategorized'] || COLORS.uncategorized}`}>
+                          {transaction.category || 'uncategorized'}
+                        </span>
+                      </td>
+                    )}
                     <td className="px-5 py-4 font-semibold text-slate-500">{transaction.source_file_name || 'N/A'}</td>
                   </tr>
                 ))}
                 {!ledgerLoading && !ledgerRows.length && (
                   <tr>
-                    <td colSpan={7} className="px-5 py-10 text-center text-sm font-semibold text-slate-400">
+                    <td colSpan={SHOW_NECESSITY_FEATURE ? 7 : 6} className="px-5 py-10 text-center text-sm font-semibold text-slate-400">
                       No transactions found for this ledger selection.
                     </td>
                   </tr>
@@ -1386,7 +1454,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
                         <button
                           type="button"
                           onClick={() => handleApproveExpenseGroup(group)}
-                          disabled={!selectedCategory || isGroupActionBusy}
+                          disabled={!selectedCategory || isGroupActionBusy || approvingAllExpenseGroups}
                           className="inline-flex items-center justify-center gap-2 rounded-2xl bg-slate-950 px-4 py-3 text-xs font-black text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
                         >
                           {isApprovingGroup ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" /> : <Check size={15} />}
@@ -1395,7 +1463,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
                         <button
                           type="button"
                           onClick={() => handleRejectExpenseGroup(group)}
-                          disabled={isGroupActionBusy}
+                          disabled={isGroupActionBusy || approvingAllExpenseGroups}
                           className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 px-4 py-3 text-xs font-black text-slate-500 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {isRejectingGroup ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-slate-700" /> : <X size={15} />}
@@ -1538,15 +1606,17 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
               disabled={!hasGroups || actionRunning}
               onClick={() => triggerAction('expense')}
             />
-            <WorkflowStep
-              step="3"
-              title="Run Necessity Categorization"
-              detail={categorizationCoverage ? `${categorizationCoverage}% categorized` : 'Transactions are uncategorized'}
-              status={categorizationCoverage >= 80 ? 'Done' : hasTransactions ? 'Ready' : 'Needs upload'}
-              icon={CheckCircle2}
-              disabled={!hasTransactions || actionRunning}
-              onClick={() => triggerAction('categorize')}
-            />
+            {SHOW_NECESSITY_FEATURE && (
+              <WorkflowStep
+                step="3"
+                title="Calculate Necessity Scores"
+                detail={!hasGroups ? 'Run grouping first' : categorizationCoverage ? `${categorizationCoverage}% classified from reviews` : 'Manual reviews are needed as evidence'}
+                status={categorizationCoverage >= 80 ? 'Done' : hasGroups ? 'Ready' : 'Waiting'}
+                icon={CheckCircle2}
+                disabled={!hasGroups || actionRunning}
+                onClick={() => triggerAction('categorize')}
+              />
+            )}
           </div>
 
           <div className="mt-6 rounded-[26px] border border-slate-200 bg-slate-50 p-5">
@@ -1829,7 +1899,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         title="Holistic Performance Reports"
         description="A cleaner presentation layer for budget utilization, forecast confidence, and operational efficiency."
       />
-      <div className="grid grid-cols-1 xl:grid-cols-[1.2fr,0.6fr,0.6fr] gap-6">
+      <div className={`grid grid-cols-1 gap-6 ${SHOW_NECESSITY_FEATURE ? "xl:grid-cols-[1.2fr,0.6fr,0.6fr]" : "xl:grid-cols-[1.4fr,0.6fr]"}`}>
         <div className={`${shellCard} p-7`}>
           <SectionKicker title="Budget Utilization by Business Unit" subtitle="Budget vs. realized spend across active departments." />
           <div className="h-[380px] mt-6">
@@ -1863,14 +1933,16 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
           isLoading={forecastLoading}
         />
 
-        <CalloutCard
-          tone="green"
-          eyebrow="Savings Potential"
-          title={`TK ${Math.round((categorizationSummary?.unnecessary || 0) * 1200 + activeAnomalyCount * 450).toLocaleString()}`}
-          description="Potential reduction from unnecessary transactions and anomalies requiring remediation."
-          footer="Estimated savings"
-          isLoading={departmentLoading}
-        />
+        {SHOW_NECESSITY_FEATURE && (
+          <CalloutCard
+            tone="green"
+            eyebrow="Savings Potential"
+            title={`TK ${Math.round((categorizationSummary?.unnecessary || 0) * 1200 + activeAnomalyCount * 450).toLocaleString()}`}
+            description="Potential reduction from unnecessary transactions and anomalies requiring remediation."
+            footer="Estimated savings"
+            isLoading={departmentLoading}
+          />
+        )}
       </div>
     </div>
   );
@@ -1883,10 +1955,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
         description="Track department spending, forecast updates, and data integrity in one place."
       />
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
+      <div className={`grid grid-cols-1 gap-5 ${SHOW_NECESSITY_FEATURE ? 'md:grid-cols-4' : 'md:grid-cols-3'}`}>
         <ExecutiveMetric label="Forecast Entries" value={forecasts.length} note="Serialized or live model output" accent="neutral" icon={Sparkles} isLoading={forecastLoading} />
         <ExecutiveMetric label="Open Anomalies" value={activeAnomalyCount} note="Needs attention" accent="negative" icon={AlertTriangle} isLoading={departmentLoading} />
-        <ExecutiveMetric label="Necessary" value={categorizationSummary?.necessary || 0} note="Spending marked essential" accent="positive" icon={CheckCircle2} isLoading={departmentLoading} />
+        {SHOW_NECESSITY_FEATURE && (
+          <ExecutiveMetric label="Necessary" value={categorizationSummary?.necessary || 0} note="Spending marked essential" accent="positive" icon={CheckCircle2} isLoading={departmentLoading} />
+        )}
         <ExecutiveMetric label="Integrity" value={`${Math.max(88, 100 - activeAnomalyCount * 2.1).toFixed(1)}%`} note={forecasts.length ? 'Forecast available' : 'Awaiting forecast'} accent="positive" icon={ShieldCheck} isLoading={isDepartmentSwitching} />
       </div>
 
@@ -1902,7 +1976,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
             Go to Dept Control
           </button>
         </div>
-        <div className="mt-6 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <div className={`mt-6 grid grid-cols-1 gap-3 md:grid-cols-2 ${SHOW_NECESSITY_FEATURE ? "xl:grid-cols-4" : "xl:grid-cols-3"}`}>
           {dataReadiness.map((item) => (
             <ReadinessCard key={item.label} label={item.label} value={item.value} state={item.state} isLoading={departmentLoading || controlDataLoading} />
           ))}
@@ -2099,11 +2173,17 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
     <LedgerHistory
       transactions={transactions}
       loading={transactionsLoading}
-      onUpdated={(updated) =>
+      onUpdated={async (updated) => {
         setTransactions((current) =>
           current.map((row) => (row.transaction_id === updated.transaction_id ? { ...row, ...updated } : row)),
-        )
-      }
+        );
+        if (selectedDeptId) {
+          await Promise.all([
+            loadTransactionsData(selectedDeptId, 100),
+            loadDepartmentData(selectedDeptId),
+          ]);
+        }
+      }}
     />
   );
 

@@ -210,6 +210,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  approveAllExpenseGroups: (payload: { dept_id: string; approvals: { chart_acc_head_name: string; category_name: string }[] }) =>
+    request<{ success: boolean; approved_count: number; categories: ExpenseCategory[]; groups: ExpenseGroupSummary[] }>('/categorization/expense-groups/approve-all', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   rejectExpenseGroup: (payload: { dept_id: string; group_no?: number | null; chart_acc_head_name?: string | null }) =>
     request<{ success: boolean; group: ExpenseGroupSummary }>('/categorization/expense-groups/reject', {
       method: 'POST',

@@ -63,6 +63,13 @@ export interface Transaction {
   expense_category_id: string | null;
   expense_category_name: string | null;
   semantic_confidence: number | null;
+  necessity_score: number;
+  necessity_confidence: number;
+  necessity_source: 'unreviewed' | 'group_consensus' | 'statistical_similarity' | 'combined_evidence' | 'admin_override' | string;
+  necessity_reason: Record<string, unknown> | null;
+  necessity_locked: boolean;
+  necessity_reviewed_by: string | null;
+  necessity_reviewed_at: string | null;
   payment_method: string | null;
   invoice_id: string | null;
   voucher_number?: string | null;

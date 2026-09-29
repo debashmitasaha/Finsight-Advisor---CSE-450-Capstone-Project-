@@ -12,6 +12,9 @@ import {
 } from 'lucide-react';
 import { UserRole } from './types';
 
+// Keep the completed backend feature dormant until product review is ready.
+export const SHOW_NECESSITY_FEATURE = false;
+
 export const COLORS: Record<string, string> = {
   necessary: 'bg-green-100 text-green-700 border-green-200',
   unnecessary: 'bg-red-100 text-red-700 border-red-200',

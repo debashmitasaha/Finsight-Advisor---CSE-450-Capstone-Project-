@@ -14,7 +14,7 @@ import LoadingState from '../components/LoadingState';
 import { InfoDot, Tip } from '../components/ForensicKit';
 import { api } from '../lib/api';
 import { Anomaly, Department, Forecast, ForecastDiagnostics, Transaction, UserAccount } from '../types';
-import { COLORS } from '../constants';
+import { COLORS, SHOW_NECESSITY_FEATURE } from '../constants';
 
 /** Plain words for the permission keys stored against each department role. */
 const PERMISSION_MEANING: Record<string, string> = {
@@ -248,9 +248,11 @@ const UserDashboard: React.FC<UserDashboardProps> = ({ user, onLogout }) => {
                 </div>
                 <div className="text-right">
                   <p className="font-black text-slate-900">TK {transaction.amount.toLocaleString()}</p>
-                  <span className={`mt-2 inline-block rounded-full px-3 py-1 text-xs font-bold border ${COLORS[transaction.category || 'uncategorized'] || COLORS.uncategorized}`}>
-                    {transaction.category || 'uncategorized'}
-                  </span>
+                  {SHOW_NECESSITY_FEATURE && (
+                    <span className={`mt-2 inline-block rounded-full px-3 py-1 text-xs font-bold border ${COLORS[transaction.category || 'uncategorized'] || COLORS.uncategorized}`}>
+                      {transaction.category || 'uncategorized'}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
