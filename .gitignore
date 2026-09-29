@@ -29,3 +29,5 @@ backend/app/forensic/*.xlsx
 .vscode/
 
 .codex
+
+modifications/
