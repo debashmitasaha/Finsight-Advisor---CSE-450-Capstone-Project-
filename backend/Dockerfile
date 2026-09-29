@@ -15,7 +15,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/requirements.txt .
 
 RUN pip install --upgrade pip \
-    && pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.11.0+cpu" \
     && pip install -r requirements.txt
 
 COPY backend/app ./app

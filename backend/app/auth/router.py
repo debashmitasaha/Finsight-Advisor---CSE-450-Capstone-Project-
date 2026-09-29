@@ -93,6 +93,10 @@ def get_user_by_id(db: Session, user_id: str) -> User | None:
     return db.query(User).filter(cast(User.user_id, String) == str(user_id)).first()
 
 
+def company_is_disabled(user: User) -> bool:
+    return bool(user.company_id and user.company and not user.company.is_active)
+
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     db: Session = Depends(get_db),
@@ -101,7 +105,7 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     user_id = decode_token(credentials.credentials, "access")
     user = get_user_by_id(db, user_id)
-    if not user or not user.is_active:
+    if not user or not user.is_active or company_is_disabled(user):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
     return user
 
@@ -112,8 +116,12 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Email already registered")
     if db.query(User).filter(User.username == payload.username).first():
         raise HTTPException(status_code=400, detail="Username already taken")
-    if payload.company_id and not db.query(Company).filter(Company.company_id == payload.company_id).first():
-        raise HTTPException(status_code=404, detail="Company not found")
+    if payload.company_id:
+        company = db.query(Company).filter(Company.company_id == payload.company_id).first()
+        if not company:
+            raise HTTPException(status_code=404, detail="Company not found")
+        if not company.is_active:
+            raise HTTPException(status_code=409, detail="Company is disabled")
 
     user = User(
         username=payload.username,
@@ -142,6 +150,8 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User account is inactive")
+    if company_is_disabled(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Company is disabled")
 
     user.last_login = datetime.utcnow()
     db.commit()
@@ -166,7 +176,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 def refresh(credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer()), db: Session = Depends(get_db)):
     user_id = decode_token(credentials.credentials, "refresh")
     user = get_user_by_id(db, user_id)
-    if not user or not user.is_active:
+    if not user or not user.is_active or company_is_disabled(user):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
     return RefreshResponse(
         access_token=create_access_token(user.user_id),

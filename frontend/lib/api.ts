@@ -77,6 +77,10 @@ export const api = {
   adminOverview: () => request<AdminOverview>('/admin/overview'),
   companies: () => request<Company[]>('/admin/companies'),
   createCompany: (company_name: string) => request<Company>('/admin/companies', { method: 'POST', body: JSON.stringify({ company_name }) }),
+  updateCompany: (companyId: string, company_name: string) =>
+    request<Company>(`/admin/companies/${companyId}`, { method: 'PATCH', body: JSON.stringify({ company_name }) }),
+  updateCompanyStatus: (companyId: string, is_active: boolean) =>
+    request<Company>(`/admin/companies/${companyId}/status`, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
   departments: (companyId?: string) => request<Department[]>(`/admin/departments${companyId ? `?company_id=${companyId}` : ''}`),
   createDepartment: (payload: { department_name: string; annual_budget: number; company_id?: string | null }) =>
     request<Department>('/admin/departments', { method: 'POST', body: JSON.stringify(payload) }),

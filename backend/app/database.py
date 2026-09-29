@@ -21,10 +21,31 @@ if load_dotenv:
     load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "sqlite:///./finsight_dev.db",
-)
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_SQLITE_PATH = BACKEND_DIR / "finsight_dev.db"
+
+
+def resolve_database_url() -> str:
+    """Use the remote database when configured, otherwise use local SQLite.
+
+    Treating a blank value as "not configured" is intentional: it lets a
+    developer switch from Supabase to SQLite by deleting DATABASE_URL from
+    ``backend/.env`` or leaving ``DATABASE_URL=`` in place.
+    """
+    remote_url = os.getenv("DATABASE_URL", "").strip()
+    if remote_url:
+        return remote_url
+
+    local_url = os.getenv("LOCAL_DATABASE_URL", "").strip()
+    if local_url:
+        return local_url
+
+    # Use an absolute path so the same database is selected whether Uvicorn is
+    # started from the repository root or from the backend directory.
+    return f"sqlite:///{DEFAULT_SQLITE_PATH.as_posix()}"
+
+
+DATABASE_URL = resolve_database_url()
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 
@@ -134,6 +155,7 @@ def sync_postgres_schema() -> None:
         text('ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()'),
         text('ALTER TABLE IF EXISTS department ADD COLUMN IF NOT EXISTS company_id UUID'),
         text('ALTER TABLE IF EXISTS company ADD COLUMN IF NOT EXISTS dept_id UUID'),
+        text('ALTER TABLE IF EXISTS company ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE'),
         text('ALTER TABLE IF EXISTS "group" ADD COLUMN IF NOT EXISTS representative_text TEXT'),
         text('ALTER TABLE IF EXISTS "group" ADD COLUMN IF NOT EXISTS embedding JSONB'),
         text('ALTER TABLE IF EXISTS "group" ADD COLUMN IF NOT EXISTS expense_category_id UUID'),
@@ -207,6 +229,9 @@ def sync_sqlite_schema() -> None:
         return
 
     table_columns = {
+        "company": {
+            "is_active": "BOOLEAN NOT NULL DEFAULT 1",
+        },
         "transaction": {
             "transaction_type": "TEXT NOT NULL DEFAULT 'debit'",
             "voucher_number": "TEXT",

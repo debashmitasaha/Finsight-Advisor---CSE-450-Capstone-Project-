@@ -83,6 +83,14 @@ class CompanyCreate(BaseModel):
     company_name: str
 
 
+class CompanyUpdate(BaseModel):
+    company_name: str
+
+
+class CompanyStatusUpdate(BaseModel):
+    is_active: bool
+
+
 class DepartmentCreate(BaseModel):
     department_name: str
     annual_budget: float = Field(default=0.0, ge=0, le=MAX_ANNUAL_BUDGET)
@@ -107,6 +115,36 @@ class RoleUpdate(BaseModel):
 
 class UserStatusUpdate(BaseModel):
     is_active: bool
+
+
+def require_super_admin(current_user: User) -> None:
+    if not current_user.is_admin or current_user.company_id is not None:
+        raise HTTPException(status_code=403, detail="Super admin access required")
+
+
+def get_company_or_404(db: Session, company_id: str) -> Company:
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    return company
+
+
+def serialize_company(
+    db: Session,
+    company: Company,
+    affected_user_count: int | None = None,
+) -> dict[str, object]:
+    result: dict[str, object] = {
+        "company_id": str(company.company_id),
+        "company_name": company.company_name,
+        "department_count": db.query(Department).filter(Department.company_id == company.company_id).count(),
+        "user_count": db.query(User).filter(User.company_id == company.company_id).count(),
+        "is_active": bool(company.is_active),
+        "purchase_date": None,
+    }
+    if affected_user_count is not None:
+        result["affected_user_count"] = affected_user_count
+    return result
 
 
 @router.get("/overview")
@@ -146,28 +184,55 @@ def admin_overview(current_user: User = Depends(get_current_user), db: Session =
 @router.get("/companies")
 def list_companies(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     companies = db.query(Company).all()
-    return [
-        {
-            "company_id": str(company.company_id),
-            "company_name": company.company_name,
-            "department_count": db.query(Department).filter(Department.company_id == company.company_id).count(),
-            "user_count": db.query(User).filter(User.company_id == company.company_id).count(),
-            "is_active": True,
-            "purchase_date": None,
-        }
-        for company in companies
-    ]
+    return [serialize_company(db, company) for company in companies]
 
 
 @router.post("/companies")
 def create_company(payload: CompanyCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if not current_user.is_admin or current_user.company_id is not None:
-        raise HTTPException(status_code=403, detail="Super admin access required")
-    company = Company(company_name=payload.company_name)
+    require_super_admin(current_user)
+    company_name = payload.company_name.strip()
+    if not company_name:
+        raise HTTPException(status_code=422, detail="Company name cannot be empty")
+    company = Company(company_name=company_name, is_active=True)
     db.add(company)
     db.commit()
     db.refresh(company)
-    return {"company_id": str(company.company_id), "company_name": company.company_name, "is_active": True, "purchase_date": None}
+    return serialize_company(db, company)
+
+
+@router.patch("/companies/{company_id}")
+def update_company(company_id: str, payload: CompanyUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_super_admin(current_user)
+    company = get_company_or_404(db, company_id)
+    company_name = payload.company_name.strip()
+    if not company_name:
+        raise HTTPException(status_code=422, detail="Company name cannot be empty")
+
+    company.company_name = company_name
+    db.commit()
+    db.refresh(company)
+    return serialize_company(db, company)
+
+
+@router.patch("/companies/{company_id}/status")
+def update_company_status(company_id: str, payload: CompanyStatusUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_super_admin(current_user)
+    company = get_company_or_404(db, company_id)
+    affected_user_count = 0
+
+    if not payload.is_active:
+        affected_user_count = (
+            db.query(User)
+            .filter(User.company_id == company.company_id, User.is_active.is_(True))
+            .update({User.is_active: False}, synchronize_session="fetch")
+        )
+
+    # Enabling a company deliberately does not reactivate its users: an account
+    # may have been individually disabled before the company was suspended.
+    company.is_active = payload.is_active
+    db.commit()
+    db.refresh(company)
+    return serialize_company(db, company, affected_user_count=affected_user_count)
 
 
 @router.get("/departments")
@@ -254,11 +319,16 @@ def list_users(company_id: Optional[str] = None, current_user: User = Depends(ge
 def create_user(payload: UserCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
+    target_company_id = payload.company_id or current_user.company_id
+    if target_company_id:
+        target_company = get_company_or_404(db, str(target_company_id))
+        if not target_company.is_active:
+            raise HTTPException(status_code=409, detail="Cannot create a user for a disabled company")
     user = User(
         username=payload.username,
         email=payload.email,
         password_hash=hash_password(payload.password),
-        company_id=payload.company_id or current_user.company_id,
+        company_id=target_company_id,
         is_admin=payload.is_admin,
         is_active=True,
     )
@@ -294,6 +364,10 @@ def update_user_status(user_id: str, payload: UserStatusUpdate, current_user: Us
     target_user = db.query(User).filter(User.user_id == user_id).first()
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
+    if payload.is_active and target_user.company_id:
+        company = get_company_or_404(db, str(target_user.company_id))
+        if not company.is_active:
+            raise HTTPException(status_code=409, detail="Cannot reactivate a user while their company is disabled")
     target_user.is_active = payload.is_active
     db.commit()
     db.refresh(target_user)
